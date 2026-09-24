@@ -324,6 +324,16 @@ BOOST_AUTO_TEST_CASE(DiskStateVersion8OrdinaryUnencryptedRoundtripTest)
 	BOOST_CHECK(!loaded.GetArticles()->at(1)->HasSegmentIndex());
 	BOOST_CHECK_EQUAL(loaded.GetArticles()->at(0)->GetPartNumber(), 1);
 	BOOST_CHECK_EQUAL(loaded.GetArticles()->at(1)->GetPartNumber(), 2);
+
+	// Verify that partial LoadArticles on 0,0,0 clears any stale in-memory identity
+	FileInfo staleLoaded(301);
+	staleLoaded.SetFileOrdinal(1);
+	staleLoaded.SetTotalFiles(2);
+	staleLoaded.SetSegmentIndexBase(10);
+	BOOST_REQUIRE(g_DiskState->LoadArticles(&staleLoaded));
+	BOOST_CHECK(!staleLoaded.HasFileOrdinal());
+	BOOST_CHECK(!staleLoaded.HasTotalFiles());
+	BOOST_CHECK(!staleLoaded.HasSegmentIndexBase());
 }
 
 BOOST_AUTO_TEST_CASE(DiskStateMalformedAndCorruptTest)

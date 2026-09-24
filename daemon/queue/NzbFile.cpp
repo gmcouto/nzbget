@@ -21,6 +21,9 @@
 
 
 #include "nzbget.h"
+#include <charconv>
+#include <limits>
+#include <vector>
 #include "NzbFile.h"
 #include "Log.h"
 #include "DownloadInfo.h"
@@ -244,8 +247,223 @@ void NzbFile::CalcHashes()
 	m_nzbInfo->SetFilteredContentHash(filteredContentHash);
 }
 
+bool NzbFile::ParseFileCounter(std::string_view subject, uint32& fileOrdinal, uint32& totalFiles)
+{
+	if (subject.empty() || subject.front() != '[')
+	{
+		return false;
+	}
+
+	size_t bracketClose = subject.find(']');
+	if (bracketClose == std::string_view::npos)
+	{
+		return false;
+	}
+
+	std::string_view after = subject.substr(bracketClose + 1);
+	if (!after.starts_with(" - "))
+	{
+		return false;
+	}
+
+	std::string_view counter = subject.substr(1, bracketClose - 1);
+	size_t slashPos = counter.find('/');
+	if (slashPos == std::string_view::npos || counter.rfind('/') != slashPos)
+	{
+		return false;
+	}
+
+	std::string_view nStr = counter.substr(0, slashPos);
+	std::string_view mStr = counter.substr(slashPos + 1);
+	if (nStr.empty() || mStr.empty())
+	{
+		return false;
+	}
+
+	for (char c : nStr)
+	{
+		if (c < '0' || c > '9') return false;
+	}
+	for (char c : mStr)
+	{
+		if (c < '0' || c > '9') return false;
+	}
+
+	uint32 n = 0;
+	uint32 m = 0;
+	auto resN = std::from_chars(nStr.data(), nStr.data() + nStr.size(), n);
+	if (resN.ec != std::errc{} || resN.ptr != nStr.data() + nStr.size())
+	{
+		return false;
+	}
+
+	auto resM = std::from_chars(mStr.data(), mStr.data() + mStr.size(), m);
+	if (resM.ec != std::errc{} || resM.ptr != mStr.data() + mStr.size())
+	{
+		return false;
+	}
+
+	if (n == 0 || m == 0 || n > m)
+	{
+		return false;
+	}
+
+	fileOrdinal = n;
+	totalFiles = m;
+	return true;
+}
+
+void NzbFile::CalculateSegmentIndices()
+{
+	FileList* fileList = m_nzbInfo->GetFileList();
+	if (fileList->empty())
+	{
+		return;
+	}
+
+	size_t totalParsed = fileList->size();
+	if (totalParsed > std::numeric_limits<uint32>::max())
+	{
+		return;
+	}
+	uint32 totalFilesCount = static_cast<uint32>(totalParsed);
+
+	bool hasValidIdentity = true;
+
+	// Check that every file has valid ordinal and matching totalFiles
+	for (FileInfo* fileInfo : fileList)
+	{
+		if (!fileInfo->HasFileOrdinal() || !fileInfo->HasTotalFiles())
+		{
+			hasValidIdentity = false;
+			break;
+		}
+		if (fileInfo->GetTotalFiles().value() != totalFilesCount)
+		{
+			hasValidIdentity = false;
+			break;
+		}
+	}
+
+	if (hasValidIdentity)
+	{
+		// Check that the set of ordinals is a strict permutation of 1..totalFilesCount
+		std::vector<bool> seenOrdinals(totalFilesCount + 1, false);
+		for (FileInfo* fileInfo : fileList)
+		{
+			uint32 ord = fileInfo->GetFileOrdinal().value();
+			if (ord < 1 || ord > totalFilesCount || seenOrdinals[ord])
+			{
+				hasValidIdentity = false;
+				break;
+			}
+			seenOrdinals[ord] = true;
+		}
+	}
+
+	if (hasValidIdentity)
+	{
+		// Check each file's declared parts: must have articles, no missed articles,
+		// and parts must be strictly 1..N contiguous without gaps or duplicates.
+		for (FileInfo* fileInfo : fileList)
+		{
+			ArticleList* articles = fileInfo->GetArticles();
+			if (articles->empty() || fileInfo->GetMissedArticles() > 0)
+			{
+				hasValidIdentity = false;
+				break;
+			}
+			for (size_t i = 0; i < articles->size(); ++i)
+			{
+				ArticleInfo* article = (*articles)[i].get();
+				if (!article || article->GetPartNumber() != static_cast<int>(i + 1))
+				{
+					hasValidIdentity = false;
+					break;
+				}
+			}
+			if (!hasValidIdentity)
+			{
+				break;
+			}
+		}
+	}
+
+	std::vector<uint32> fileBases(totalFilesCount + 1, 0);
+	if (hasValidIdentity)
+	{
+		// Index files by ordinal
+		std::vector<FileInfo*> filesByOrd(totalFilesCount + 1, nullptr);
+		for (FileInfo* fileInfo : fileList)
+		{
+			filesByOrd[fileInfo->GetFileOrdinal().value()] = fileInfo;
+		}
+
+		uint32 prefixSum = 0;
+		for (uint32 ord = 1; ord <= totalFilesCount; ++ord)
+		{
+			FileInfo* fileInfo = filesByOrd[ord];
+			uint32 partCount = static_cast<uint32>(fileInfo->GetArticles()->size());
+			// base is 1-based start segment index: prefixSum + 1
+			if (prefixSum > std::numeric_limits<uint32>::max() - 1)
+			{
+				hasValidIdentity = false;
+				break;
+			}
+			uint32 base = prefixSum + 1;
+			// Check if base + partCount - 1 overflows uint32
+			if (partCount == 0 || base > std::numeric_limits<uint32>::max() - (partCount - 1))
+			{
+				hasValidIdentity = false;
+				break;
+			}
+			fileBases[ord] = base;
+			prefixSum += partCount;
+		}
+	}
+
+	if (hasValidIdentity)
+	{
+		for (FileInfo* fileInfo : fileList)
+		{
+			uint32 ord = fileInfo->GetFileOrdinal().value();
+			uint32 base = fileBases[ord];
+			fileInfo->SetSegmentIndexBase(base);
+
+			ArticleList* articles = fileInfo->GetArticles();
+			for (size_t i = 0; i < articles->size(); ++i)
+			{
+				ArticleInfo* article = (*articles)[i].get();
+				uint32 segIndex = base + static_cast<uint32>(article->GetPartNumber()) - 1;
+				article->SetSegmentIndex(segIndex);
+			}
+		}
+	}
+	else
+	{
+		// Unset all identity fields across the release
+		for (FileInfo* fileInfo : fileList)
+		{
+			fileInfo->SetFileOrdinal(std::nullopt);
+			fileInfo->SetTotalFiles(std::nullopt);
+			fileInfo->SetSegmentIndexBase(std::nullopt);
+
+			ArticleList* articles = fileInfo->GetArticles();
+			for (auto& article : *articles)
+			{
+				if (article)
+				{
+					article->SetSegmentIndex(std::nullopt);
+				}
+			}
+		}
+	}
+}
+
 void NzbFile::ProcessFiles()
 {
+	CalculateSegmentIndices();
+
 	BuildFilenames();
 
 	for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
@@ -384,6 +602,13 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			if (!strcmp("subject", attrname))
 			{
 				m_fileInfo->SetSubject(attrvalue);
+				uint32 fileOrdinal = 0;
+				uint32 totalFiles = 0;
+				if (ParseFileCounter(attrvalue, fileOrdinal, totalFiles))
+				{
+					m_fileInfo->SetFileOrdinal(fileOrdinal);
+					m_fileInfo->SetTotalFiles(totalFiles);
+				}
 			}
 			if (!strcmp("date", attrname))
 			{

@@ -38,6 +38,8 @@ public:
 	const std::string& GetMetaName() const { return m_metaName; }
 	const std::string& GetMetaTitle() const { return m_metaTitle; }
 
+	static bool ParseFileCounter(std::string_view subject, uint32& fileOrdinal, uint32& totalFiles);
+
 	void LogDebugInfo();
 
 private:
@@ -53,6 +55,7 @@ private:
 	void ParseSubject(FileInfo* fileInfo, bool TryQuotes);
 	void BuildFilenames();
 	void ProcessFiles();
+	void CalculateSegmentIndices();
 	void CalcHashes();
 	bool HasDuplicateFilenames();
 	void ReadPasswordFromFilename();

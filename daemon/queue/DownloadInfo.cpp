@@ -71,6 +71,19 @@ NzbParameter* NzbParameterList::Find(const char* name)
 	return nullptr;
 }
 
+const NzbParameter* NzbParameterList::Find(const char* name) const
+{
+	for (const NzbParameter& parameter : *this)
+	{
+		if (!strcasecmp(parameter.GetName(), name))
+		{
+			return &parameter;
+		}
+	}
+
+	return nullptr;
+}
+
 void NzbParameterList::CopyFrom(NzbParameterList* sourceParameters)
 {
 	for (NzbParameter& parameter : sourceParameters)

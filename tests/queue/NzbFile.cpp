@@ -204,6 +204,12 @@ namespace
 		    << "</file>\n"
 		    << "</nzb>\n";
 	}
+
+	void WriteRawNzb(const fs::path& filePath, std::string_view content)
+	{
+		std::ofstream out(filePath.string());
+		out << content;
+	}
 }
 
 BOOST_AUTO_TEST_CASE(NzbFileMetaParsingTest)
@@ -326,6 +332,79 @@ BOOST_AUTO_TEST_CASE(BuildFinalDirNameUniqueIdTest)
 
 	// Both empty downloads must have different final directories
 	BOOST_CHECK_NE(finalDir1, finalDir2);
+}
+
+BOOST_AUTO_TEST_CASE(NzbFileSegmentIdentityTest)
+{
+	const fs::path tempNzb = fs::temp_directory_path() / "nzbget_test_segment_identity_reversed.nzb";
+	const std::string xml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<!DOCTYPE nzb PUBLIC \"-//newzBin//DTD NZB 1.0//EN\" \"http://www.newzbin.com/DTD/nzb/nzb-1.0.dtd\">\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg2_1@test</segment></segments>\n"
+		"</file>\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file1.bin&quot; yEnc (1/2)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments>\n"
+		"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
+		"<segment bytes=\"100\" number=\"2\">msg1_2@test</segment>\n"
+		"</segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+
+	WriteRawNzb(tempNzb, xml);
+
+	auto verifyParsed = [](const fs::path& path)
+	{
+		NzbFile nzbFile(path.string().c_str(), "");
+		BOOST_REQUIRE(nzbFile.Parse());
+
+		auto nzbInfo = nzbFile.DetachNzbInfo();
+		BOOST_REQUIRE(nzbInfo);
+		FileList* fileList = nzbInfo->GetFileList();
+		BOOST_REQUIRE_EQUAL(fileList->size(), 2U);
+
+		FileInfo* file1 = nullptr;
+		FileInfo* file2 = nullptr;
+		for (FileInfo* fi : fileList)
+		{
+			if (fi->HasFileOrdinal() && fi->GetFileOrdinal().value() == 1U)
+			{
+				file1 = fi;
+			}
+			else if (fi->HasFileOrdinal() && fi->GetFileOrdinal().value() == 2U)
+			{
+				file2 = fi;
+			}
+		}
+
+		BOOST_REQUIRE(file1 != nullptr);
+		BOOST_REQUIRE(file2 != nullptr);
+
+		BOOST_CHECK_EQUAL(file1->GetTotalFiles().value(), 2U);
+		BOOST_CHECK_EQUAL(file1->GetSegmentIndexBase().value(), 1U);
+		BOOST_REQUIRE_EQUAL(file1->GetArticles()->size(), 2U);
+		BOOST_REQUIRE(file1->GetArticles()->at(0)->HasSegmentIndex());
+		BOOST_CHECK_EQUAL(file1->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
+		BOOST_REQUIRE(file1->GetArticles()->at(1)->HasSegmentIndex());
+		BOOST_CHECK_EQUAL(file1->GetArticles()->at(1)->GetSegmentIndex().value(), 2U);
+
+		BOOST_CHECK_EQUAL(file2->GetTotalFiles().value(), 2U);
+		BOOST_CHECK_EQUAL(file2->GetSegmentIndexBase().value(), 3U);
+		BOOST_REQUIRE_EQUAL(file2->GetArticles()->size(), 1U);
+		BOOST_REQUIRE(file2->GetArticles()->at(0)->HasSegmentIndex());
+		BOOST_CHECK_EQUAL(file2->GetArticles()->at(0)->GetSegmentIndex().value(), 3U);
+	};
+
+	// 1. Reversed XML order produces canonical continuous assignment
+	verifyParsed(tempNzb);
+
+	// 2. Repeated parse produces identical values
+	verifyParsed(tempNzb);
+
+	fs::remove(tempNzb);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

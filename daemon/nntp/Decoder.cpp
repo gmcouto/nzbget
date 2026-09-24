@@ -355,6 +355,11 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 
 Decoder::EStatus Decoder::Check()
 {
+	if (m_authFailed)
+	{
+		return dsAuthFailed;
+	}
+
 	switch (m_format)
 	{
 		case efYenc:

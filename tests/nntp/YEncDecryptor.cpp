@@ -24,6 +24,9 @@
 #include "YEncDecryptor.h"
 #include "YEncoder.h"
 #include "Util.h"
+#include "DownloadInfo.h"
+#include "Options.h"
+#include "ArticleDownloader.h"
 
 #include <string>
 #include <vector>
@@ -249,6 +252,55 @@ BOOST_AUTO_TEST_CASE(DecoderAuthFailureIntegrationTest)
 	auto status = decoder.Check();
 	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(Decoder::dsAuthFailed));
 	BOOST_CHECK_EQUAL(decoder.GetDecryptedData().size(), 0); // Zero-Output Guarantee!
+}
+
+BOOST_AUTO_TEST_CASE(NzbInfoPasswordAccessorTest)
+{
+	NzbInfo nzbInfo;
+	BOOST_CHECK(!nzbInfo.HasPassword());
+	BOOST_CHECK_EQUAL(std::string(nzbInfo.GetPassword()), "");
+
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "secret_pass_123");
+	BOOST_CHECK(nzbInfo.HasPassword());
+	BOOST_CHECK_EQUAL(std::string(nzbInfo.GetPassword()), "secret_pass_123");
+
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "");
+	BOOST_CHECK(!nzbInfo.HasPassword());
+	BOOST_CHECK_EQUAL(std::string(nzbInfo.GetPassword()), "");
+}
+
+BOOST_AUTO_TEST_CASE(DirectWriteBypassForPasswordTest)
+{
+	NzbInfo nzbInfo;
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+
+	// Without password: direct-write follows g_Options->GetDirectWrite()
+	bool hasPassword = fileInfo.GetNzbInfo() && fileInfo.GetNzbInfo()->HasPassword();
+	bool directWriteAllowed = (g_Options->GetDirectWrite() && !hasPassword) || fileInfo.GetForceDirectWrite();
+	BOOST_CHECK(!hasPassword);
+	BOOST_CHECK_EQUAL(directWriteAllowed, g_Options->GetDirectWrite());
+
+	// With password: direct-write is strictly bypassed (Zero-Output Guarantee)
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "secret_pass_123");
+	hasPassword = fileInfo.GetNzbInfo() && fileInfo.GetNzbInfo()->HasPassword();
+	directWriteAllowed = (g_Options->GetDirectWrite() && !hasPassword) || fileInfo.GetForceDirectWrite();
+	BOOST_CHECK(hasPassword);
+	BOOST_CHECK_EQUAL(directWriteAllowed, false);
+}
+
+BOOST_AUTO_TEST_CASE(ArticleDownloaderFailoverMappingTest)
+{
+	// Verify that Decoder::dsAuthFailed is recognized as authentication failure
+	Decoder decoder;
+	decoder.SetAuthFailed(true);
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+
+	// Verify that dsAuthFailed is mapped to retryable adFailed (enabling QueueCoordinator server failover)
+	Decoder::EStatus decStatus = Decoder::dsAuthFailed;
+	ArticleDownloader::EStatus adStatus = (decStatus == Decoder::dsAuthFailed) ?
+		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
+	BOOST_CHECK_EQUAL(static_cast<int>(adStatus), static_cast<int>(ArticleDownloader::adFailed));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

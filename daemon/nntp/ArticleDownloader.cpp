@@ -360,6 +360,20 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	m_decoder.SetCrcCheck(g_Options->GetCrcCheck());
 	m_decoder.SetRawMode(g_Options->GetRawArticle());
 
+	if (m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword())
+	{
+		const char* pwd = m_fileInfo->GetNzbInfo()->GetPassword();
+		if (!m_decryptor || m_decryptor->GetPassword() != pwd)
+		{
+			m_decryptor = std::make_unique<YEncDecryptor>(pwd);
+		}
+		m_decoder.SetDecryptor(m_decryptor.get());
+		if (m_articleInfo->HasSegmentIndex())
+		{
+			m_decoder.SetSegmentIndex(m_articleInfo->GetSegmentIndex().value());
+		}
+	}
+
 	status = adRunning;
 	CharBuffer lineBuf(g_Options->GetArticleReadChunkSize());
 
@@ -537,6 +551,11 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 			}
 
 			return adFinished;
+		}
+		else if (status == Decoder::dsAuthFailed)
+		{
+			detail("Decoding %s failed: authentication failure", *m_infoName);
+			return adFailed;
 		}
 		else if (status == Decoder::dsCrcError)
 		{

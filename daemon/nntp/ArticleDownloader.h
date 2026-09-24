@@ -24,6 +24,7 @@
 #define ARTICLEDOWNLOADER_H
 
 #include <atomic>
+#include <memory>
 #include "NString.h"
 #include "Observer.h"
 #include "DownloadInfo.h"
@@ -32,6 +33,7 @@
 #include "Decoder.h"
 #include "ArticleWriter.h"
 #include "Util.h"
+#include "YEncDecryptor.h"
 
 class ArticleContentAnalyzer
 {
@@ -94,6 +96,7 @@ private:
 	std::atomic<time_t> m_lastUpdateTime;
 	Decoder m_decoder;
 	ArticleWriter m_articleWriter;
+	std::unique_ptr<YEncDecryptor> m_decryptor;
 	ServerStatList m_serverStats;
 	bool m_writingStarted;
 	int m_downloadedSize = 0;

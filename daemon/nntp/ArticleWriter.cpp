@@ -89,7 +89,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			{
 				Guard guard = m_fileInfo->GuardOutputFile();
 				outputInitialized = m_fileInfo->GetOutputInitialized();
-				if (!g_Options->GetDirectWrite())
+				if (!g_Options->GetDirectWrite() || (m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword()))
 				{
 					m_fileInfo->SetOutputInitialized(true);
 				}
@@ -103,7 +103,8 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			}
 		}
 
-		if (g_Options->GetDirectWrite())
+		bool hasPassword = m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword();
+		if (g_Options->GetDirectWrite() && !hasPassword)
 		{
 			Guard guard = m_fileInfo->GuardOutputFile();
 			if (!m_fileInfo->GetOutputInitialized())
@@ -118,8 +119,10 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 	}
 
 	// allocate cache buffer
+	bool hasPassword = m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword();
+	bool directWriteAllowed = (g_Options->GetDirectWrite() && !hasPassword) || m_fileInfo->GetForceDirectWrite();
 	if (g_Options->GetArticleCache() > 0 && !g_Options->GetRawArticle() &&
-		(!g_Options->GetDirectWrite() || m_format == Decoder::efYenc))
+		(!directWriteAllowed || m_format == Decoder::efYenc))
 	{
 		m_articleData = g_ArticleCache->Alloc(m_articleSize);
 
@@ -142,7 +145,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			return true;
 		}
 
-		bool directWrite = (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+		bool directWrite = directWriteAllowed && m_format == Decoder::efYenc;
 		const char* outFilename = directWrite ? m_outputFilename.c_str() : m_tempFilename.c_str();
 		if (!m_outFile.Open(outFilename, directWrite ? DiskFile::omReadWrite : DiskFile::omWrite))
 		{
@@ -216,7 +219,8 @@ void ArticleWriter::Finish(bool success)
 		return;
 	}
 
-	bool directWrite = (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+	bool hasPassword = m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword();
+	bool directWrite = ((g_Options->GetDirectWrite() && !hasPassword) || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
 
 	if (!g_Options->GetRawArticle())
 	{
@@ -356,7 +360,8 @@ void ArticleWriter::CompleteFileParts()
 	debug("ArticleFilename: %s", m_fileInfo->GetFilename());
 
 	// 1. Gather context & configuration
-	bool directWrite = (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
+	bool hasPassword = m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword();
+	bool directWrite = ((g_Options->GetDirectWrite() && !hasPassword) || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
 	bool cached = m_fileInfo->GetCachedArticles() > 0;
 
 	std::string nzbDestDir;
@@ -747,7 +752,8 @@ void ArticleWriter::FlushCache()
 {
 	detail("Flushing cache for %s", m_infoName.c_str());
 
-	bool directWrite = g_Options->GetDirectWrite() && m_fileInfo->GetOutputInitialized();
+	bool hasPassword = m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword();
+	bool directWrite = g_Options->GetDirectWrite() && !hasPassword && m_fileInfo->GetOutputInitialized();
 	DiskFile outfile;
 	bool needBufFile = false;
 	int flushedArticles = 0;

@@ -23,6 +23,7 @@
 #include "Decoder.h"
 #include "Log.h"
 #include "Util.h"
+#include "YEncDecryptor.h"
 
 Decoder::Decoder()
 {
@@ -49,6 +50,13 @@ void Decoder::Clear()
 	m_crcCheck = false;
 	m_lineBuf.Reserve(1024*8);
 	m_lineBuf.SetLength(0);
+	m_encrypted = false;
+	m_authFailed = false;
+	m_cipher.clear();
+	memset(m_salt, 0, sizeof(m_salt));
+	memset(m_tag, 0, sizeof(m_tag));
+	m_cipherPayload.clear();
+	m_decryptedPlaintext.clear();
 }
 
 /* At the beginning of article the processing goes line by line to find '=ybegin'-marker.
@@ -69,10 +77,19 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 
 	if (m_body && m_format == efYenc)
 	{
-		outlen = DecodeYenc(buffer, buffer, len);
-		if (m_body)
+		if ((len >= 13 && !strncmp(buffer, "=yencryption ", 13)) ||
+			(len >= 7 && !strncmp(buffer, "=ypart ", 7)))
 		{
-			return outlen;
+			m_body = false;
+			m_lineBuf.Append(buffer, len);
+		}
+		else
+		{
+			outlen = DecodeYenc(buffer, buffer, len);
+			if (m_body)
+			{
+				return outlen;
+			}
 		}
 	}
 	else
@@ -102,7 +119,21 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 			ProcessYenc(line, llen);
 			if (m_body)
 			{
-				outlen = DecodeYenc(end + 1, buffer, m_lineBuf.Length() - (int)(end + 1 - m_lineBuf));
+				const char* next = end + 1;
+				int rem = m_lineBuf.Length() - (int)(next - m_lineBuf);
+				if (rem >= 13 && !strncmp(next, "=yencryption ", 13))
+				{
+					m_body = false;
+					line = end + 1;
+					continue;
+				}
+				if (rem >= 7 && !strncmp(next, "=ypart ", 7))
+				{
+					m_body = false;
+					line = end + 1;
+					continue;
+				}
+				outlen = DecodeYenc(end + 1, buffer, rem);
 				if (m_body)
 				{
 					m_lineBuf.SetLength(0);
@@ -261,6 +292,21 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			m_endSize = atoll(pb);
 		}
 	}
+	// 4. Check =yencryption (Prefix length 13)
+	else if (len >= 13 && !strncmp(buffer, "=yencryption ", 13))
+	{
+		ParseEncryption(buffer, len);
+	}
+}
+
+void Decoder::ParseEncryption(const char* buffer, int len)
+{
+	m_encrypted = true;
+	if (!YEncDecryptor::ParseYEncryption(buffer, len, m_cipher, m_salt, m_tag))
+	{
+		m_authFailed = true;
+	}
+	m_body = true;
 }
 
 int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
@@ -297,6 +343,13 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 
 	m_outSize += bytesWritten;
 
+	if (m_encrypted)
+	{
+		m_cipherPayload.insert(m_cipherPayload.end(),
+			reinterpret_cast<const uint8_t*>(outbuf),
+			reinterpret_cast<const uint8_t*>(outbuf) + bytesWritten);
+	}
+
 	return bytesWritten;
 }
 
@@ -330,6 +383,10 @@ Decoder::EStatus Decoder::CheckYenc()
 	{
 		return dsArticleIncomplete;
 	}
+	else if (m_authFailed)
+	{
+		return dsAuthFailed;
+	}
 	else if ((!m_part && m_size != m_endSize) || (m_endSize != m_outSize))
 	{
 		return dsInvalidSize;
@@ -339,7 +396,41 @@ Decoder::EStatus Decoder::CheckYenc()
 		return dsCrcError;
 	}
 
+	if (m_encrypted && m_decryptor)
+	{
+		m_decryptedPlaintext.clear();
+		YEncDecryptor::Status st = m_decryptor->AuthenticateAndDecrypt(
+			m_cipherPayload.data(), m_cipherPayload.size(),
+			m_salt, m_tag, m_segmentIndex, m_decryptedPlaintext
+		);
+		if (st != YEncDecryptor::Status::Ok)
+		{
+			m_authFailed = true;
+			m_decryptedPlaintext.clear();
+			return dsAuthFailed;
+		}
+	}
+
 	return dsFinished;
+}
+
+bool Decoder::AuthenticateAndDecrypt(const uint8_t* ciphertext, size_t cipherLen, std::vector<uint8_t>& outPlaintext)
+{
+	outPlaintext.clear();
+	if (!m_decryptor)
+	{
+		return false;
+	}
+	YEncDecryptor::Status st = m_decryptor->AuthenticateAndDecrypt(
+		ciphertext, cipherLen, m_salt, m_tag, m_segmentIndex, outPlaintext
+	);
+	if (st != YEncDecryptor::Status::Ok)
+	{
+		m_authFailed = true;
+		outPlaintext.clear();
+		return false;
+	}
+	return true;
 }
 
 

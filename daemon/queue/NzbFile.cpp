@@ -59,6 +59,10 @@ ArticleInfo* NzbFile::AddArticle(FileInfo* fileInfo, std::unique_ptr<ArticleInfo
 	{
 		fileInfo->GetArticles()->resize(index + 1);
 	}
+	else if ((*fileInfo->GetArticles())[index])
+	{
+		fileInfo->SetDuplicateArticles(true);
+	}
 
 	(*fileInfo->GetArticles())[index] = std::move(articleInfo);
 	
@@ -368,7 +372,7 @@ void NzbFile::CalculateSegmentIndices()
 		for (FileInfo* fileInfo : fileList)
 		{
 			ArticleList* articles = fileInfo->GetArticles();
-			if (articles->empty() || fileInfo->GetMissedArticles() > 0)
+			if (articles->empty() || fileInfo->GetMissedArticles() > 0 || fileInfo->GetDuplicateArticles())
 			{
 				hasValidIdentity = false;
 				break;

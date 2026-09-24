@@ -165,6 +165,8 @@ public:
 	void SetSegmentIndexBase(std::optional<uint32> segmentIndexBase) { m_segmentIndexBase = segmentIndexBase; }
 	void SetSegmentIndexBase(uint32 segmentIndexBase) { m_segmentIndexBase = segmentIndexBase; }
 	bool HasSegmentIndexBase() const { return m_segmentIndexBase.has_value(); }
+	bool GetDuplicateArticles() const { return m_duplicateArticles; }
+	void SetDuplicateArticles(bool duplicateArticles) { m_duplicateArticles = duplicateArticles; }
 	void MakeValidFilename();
 	bool GetFilenameConfirmed() { return m_filenameConfirmed; }
 	void SetFilenameConfirmed(bool filenameConfirmed) { m_filenameConfirmed = filenameConfirmed; }
@@ -272,6 +274,7 @@ private:
 	std::optional<uint32> m_fileOrdinal;
 	std::optional<uint32> m_totalFiles;
 	std::optional<uint32> m_segmentIndexBase;
+	bool m_duplicateArticles = false;
 
 	static int m_idGen;
 	static int m_idMax;

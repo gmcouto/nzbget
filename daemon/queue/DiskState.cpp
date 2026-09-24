@@ -20,6 +20,9 @@
 
 
 #include "nzbget.h"
+#include <charconv>
+#include <string_view>
+#include <limits>
 #include "NString.h"
 #include "DiskState.h"
 #include "Options.h"
@@ -29,9 +32,26 @@
 
 static const char* FORMATVERSION_SIGNATURE = "nzbget diskstate file version ";
 const int DISKSTATE_QUEUE_VERSION = 64;
-const int DISKSTATE_FILE_VERSION = 7;
+const int DISKSTATE_FILE_VERSION = 8;
 const int DISKSTATE_STATS_VERSION = 4;
 const int DISKSTATE_FEEDS_VERSION = 3;
+
+static bool ParseUint32Token(std::string_view str, uint32& val)
+{
+	if (str.empty())
+	{
+		return false;
+	}
+	for (char c : str)
+	{
+		if (c < '0' || c > '9')
+		{
+			return false;
+		}
+	}
+	auto res = std::from_chars(str.data(), str.data() + str.size(), val);
+	return res.ec == std::errc{} && res.ptr == str.data() + str.size();
+}
 
 class StateDiskFile : public DiskFile
 {
@@ -1081,6 +1101,16 @@ bool DiskState::SaveFileInfo(FileInfo* fileInfo, StateDiskFile& outfile, bool ar
 	outfile.PrintLine("%s", fileInfo->GetOrigname() ? fileInfo->GetOrigname() : "");
 	outfile.PrintLine("%s", fileInfo->GetOutputFilename().c_str());
 
+	// Version 8+: file identity line (fileOrdinal,totalFiles,segmentIndexBase; 0,0,0 if unset)
+	if (fileInfo->HasFileOrdinal() && fileInfo->HasTotalFiles() && fileInfo->HasSegmentIndexBase())
+	{
+		outfile.PrintLine("%u,%u,%u", fileInfo->GetFileOrdinal().value(), fileInfo->GetTotalFiles().value(), fileInfo->GetSegmentIndexBase().value());
+	}
+	else
+	{
+		outfile.PrintLine("0,0,0");
+	}
+
 	outfile.PrintLine("%i,%i", (int)fileInfo->GetFilenameConfirmed(), (int)fileInfo->GetTime());
 
 	uint32 High, Low;
@@ -1104,7 +1134,8 @@ bool DiskState::SaveFileInfo(FileInfo* fileInfo, StateDiskFile& outfile, bool ar
 		outfile.PrintLine("%i", (int)fileInfo->GetArticles()->size());
 		for (ArticleInfo* articleInfo : fileInfo->GetArticles())
 		{
-			outfile.PrintLine("%i,%i", articleInfo->GetPartNumber(), articleInfo->GetSize());
+			outfile.PrintLine("%i,%i,%u", articleInfo->GetPartNumber(), articleInfo->GetSize(),
+				articleInfo->GetSegmentIndex().value_or(0));
 			outfile.PrintLine("%s", articleInfo->GetMessageId());
 		}
 	}
@@ -1135,6 +1166,13 @@ bool DiskState::LoadFile(FileInfo* fileInfo, bool fileSummary, bool articles)
 
 bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int formatVersion, bool fileSummary, bool articles)
 {
+	bool hasFileIdentity = false;
+
+	if (formatVersion <= 0)
+	{
+		goto error;
+	}
+
 	char buf[1024];
 
 	if (!infile.ReadLine(buf, sizeof(buf))) goto error;
@@ -1155,6 +1193,73 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 		if (!Util::EmptyStr(buf))
 		{
 			fileInfo->SetOutputFilename(buf);
+		}
+	}
+
+	if (formatVersion >= 8)
+	{
+		if (!infile.ReadLine(buf, sizeof(buf))) goto error;
+
+		uint32 fileOrdinal = 0;
+		uint32 totalFiles = 0;
+		uint32 segmentIndexBase = 0;
+
+		std::string_view lineView(buf);
+		size_t comma1 = lineView.find(',');
+		if (comma1 == std::string_view::npos) goto error;
+		size_t comma2 = lineView.find(',', comma1 + 1);
+		if (comma2 == std::string_view::npos) goto error;
+		if (lineView.find(',', comma2 + 1) != std::string_view::npos) goto error;
+
+		std::string_view ordStr = lineView.substr(0, comma1);
+		std::string_view totalStr = lineView.substr(comma1 + 1, comma2 - (comma1 + 1));
+		std::string_view baseStr = lineView.substr(comma2 + 1);
+
+		if (!ParseUint32Token(ordStr, fileOrdinal) ||
+			!ParseUint32Token(totalStr, totalFiles) ||
+			!ParseUint32Token(baseStr, segmentIndexBase))
+		{
+			goto error;
+		}
+
+		if (fileOrdinal == 0 && totalFiles == 0 && segmentIndexBase == 0)
+		{
+			hasFileIdentity = false;
+			if (fileSummary)
+			{
+				fileInfo->SetFileOrdinal(std::nullopt);
+				fileInfo->SetTotalFiles(std::nullopt);
+				fileInfo->SetSegmentIndexBase(std::nullopt);
+			}
+		}
+		else if (fileOrdinal >= 1 && totalFiles >= 1 && fileOrdinal <= totalFiles)
+		{
+			hasFileIdentity = true;
+			if (fileSummary)
+			{
+				fileInfo->SetFileOrdinal(fileOrdinal);
+				fileInfo->SetTotalFiles(totalFiles);
+				fileInfo->SetSegmentIndexBase(segmentIndexBase);
+			}
+			else if (!fileInfo->HasFileOrdinal())
+			{
+				fileInfo->SetFileOrdinal(fileOrdinal);
+				fileInfo->SetTotalFiles(totalFiles);
+				fileInfo->SetSegmentIndexBase(segmentIndexBase);
+			}
+		}
+		else
+		{
+			goto error;
+		}
+	}
+	else
+	{
+		if (fileSummary)
+		{
+			fileInfo->SetFileOrdinal(std::nullopt);
+			fileInfo->SetTotalFiles(std::nullopt);
+			fileInfo->SetSegmentIndexBase(std::nullopt);
 		}
 	}
 
@@ -1204,7 +1309,44 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 		for (int i = 0; i < size; i++)
 		{
 			int PartNumber, PartSize;
-			if (infile.ScanLine("%i,%i", &PartNumber, &PartSize) != 2) goto error;
+			uint32 segmentIndex = 0;
+
+			if (formatVersion >= 8)
+			{
+				if (!infile.ReadLine(buf, sizeof(buf))) goto error;
+
+				std::string_view artLine(buf);
+				size_t c1 = artLine.find(',');
+				if (c1 == std::string_view::npos) goto error;
+				size_t c2 = artLine.find(',', c1 + 1);
+				if (c2 == std::string_view::npos) goto error;
+				if (artLine.find(',', c2 + 1) != std::string_view::npos) goto error;
+
+				std::string_view partStr = artLine.substr(0, c1);
+				std::string_view sizeStr = artLine.substr(c1 + 1, c2 - (c1 + 1));
+				std::string_view segStr = artLine.substr(c2 + 1);
+
+				uint32 partVal = 0;
+				uint32 sizeVal = 0;
+				if (!ParseUint32Token(partStr, partVal) ||
+					!ParseUint32Token(sizeStr, sizeVal) ||
+					!ParseUint32Token(segStr, segmentIndex))
+				{
+					goto error;
+				}
+				if (partVal > static_cast<uint32>(std::numeric_limits<int>::max()) ||
+					sizeVal > static_cast<uint32>(std::numeric_limits<int>::max()) ||
+					partVal == 0)
+				{
+					goto error;
+				}
+				PartNumber = static_cast<int>(partVal);
+				PartSize = static_cast<int>(sizeVal);
+			}
+			else
+			{
+				if (infile.ScanLine("%i,%i", &PartNumber, &PartSize) != 2) goto error;
+			}
 
 			if (!infile.ReadLine(buf, sizeof(buf))) goto error;
 
@@ -1212,6 +1354,31 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 			articleInfo->SetPartNumber(PartNumber);
 			articleInfo->SetSize(PartSize);
 			articleInfo->SetMessageId(buf);
+
+			if (formatVersion >= 8)
+			{
+				if (hasFileIdentity)
+				{
+					if (segmentIndex == 0)
+					{
+						goto error;
+					}
+					articleInfo->SetSegmentIndex(segmentIndex);
+				}
+				else
+				{
+					if (segmentIndex != 0)
+					{
+						goto error;
+					}
+					articleInfo->SetSegmentIndex(std::nullopt);
+				}
+			}
+			else
+			{
+				articleInfo->SetSegmentIndex(std::nullopt);
+			}
+
 			fileInfo->GetArticles()->push_back(std::move(articleInfo));
 		}
 	}

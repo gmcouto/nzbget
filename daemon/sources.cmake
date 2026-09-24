@@ -43,6 +43,7 @@ set(SRC
 	${CMAKE_SOURCE_DIR}/daemon/nntp/NntpConnection.cpp
 	${CMAKE_SOURCE_DIR}/daemon/nntp/ServerPool.cpp
 	${CMAKE_SOURCE_DIR}/daemon/nntp/StatMeter.cpp
+	${CMAKE_SOURCE_DIR}/daemon/nntp/YEncDecryptor.cpp
 
 	${CMAKE_SOURCE_DIR}/daemon/nserv/NntpServer.cpp
 	${CMAKE_SOURCE_DIR}/daemon/nserv/NServFrontend.cpp

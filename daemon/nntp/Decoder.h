@@ -23,8 +23,12 @@
 #define DECODER_H
 
 #include <string>
+#include <vector>
+#include <cstdint>
 #include "NString.h"
 #include "Util.h"
+
+class YEncDecryptor;
 
 class Decoder
 {
@@ -36,7 +40,8 @@ public:
 		dsArticleIncomplete,
 		dsCrcError,
 		dsInvalidSize,
-		dsNoBinaryData
+		dsNoBinaryData,
+		dsAuthFailed
 	};
 
 	enum EFormat
@@ -60,6 +65,16 @@ public:
 	uint32 GetCalculatedCrc() { return m_calculatedCRC; }
 	bool GetEof() { return m_eof; }
 	const char* GetArticleFilename() { return m_articleFilename.c_str(); }
+
+	void SetDecryptor(YEncDecryptor* decryptor) { m_decryptor = decryptor; }
+	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
+	bool IsEncrypted() const { return m_encrypted; }
+	const uint8_t* GetSalt() const { return m_salt; }
+	const uint8_t* GetTag() const { return m_tag; }
+	const char* GetCipher() const { return m_cipher.c_str(); }
+	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
+	bool AuthenticateAndDecrypt(const uint8_t* ciphertext, size_t cipherLen, std::vector<uint8_t>& outPlaintext);
+	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
 
 private:
 	/**
@@ -110,9 +125,19 @@ private:
 	std::string m_articleFilename;
 	StringBuilder m_lineBuf;
 	Crc32 m_crc32;
+	YEncDecryptor* m_decryptor = nullptr;
+	uint32 m_segmentIndex = 0;
+	bool m_encrypted = false;
+	bool m_authFailed = false;
+	uint8_t m_salt[16] = {0};
+	uint8_t m_tag[16] = {0};
+	std::string m_cipher;
+	std::vector<uint8_t> m_cipherPayload;
+	std::vector<uint8_t> m_decryptedPlaintext;
 
 	EFormat DetectFormat(const char* buffer, int len);
 	void ProcessYenc(char* buffer, int len);
+	void ParseEncryption(const char* buffer, int len);
 	int DecodeYenc(char* buffer, char* outbuf, int len);
 	EStatus CheckYenc();
 	int DecodeUx(const char* inbuf, int len, char* outbuf);

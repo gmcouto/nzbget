@@ -407,4 +407,255 @@ BOOST_AUTO_TEST_CASE(NzbFileSegmentIdentityTest)
 	fs::remove(tempNzb);
 }
 
+BOOST_AUTO_TEST_CASE(NzbFileSegmentIdentityMalformedAndOrdinaryTest)
+{
+	auto parseAndCheckAllUnset = [](std::string_view xml, const std::string& filename)
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		BOOST_REQUIRE(nzbFile.Parse());
+
+		auto nzbInfo = nzbFile.DetachNzbInfo();
+		BOOST_REQUIRE(nzbInfo);
+		FileList* fileList = nzbInfo->GetFileList();
+		BOOST_REQUIRE(!fileList->empty());
+
+		for (FileInfo* fi : fileList)
+		{
+			BOOST_CHECK(!fi->HasFileOrdinal());
+			BOOST_CHECK(!fi->HasTotalFiles());
+			BOOST_CHECK(!fi->HasSegmentIndexBase());
+			for (auto& art : *fi->GetArticles())
+			{
+				if (art)
+				{
+					BOOST_CHECK(!art->HasSegmentIndex());
+				}
+			}
+		}
+
+		fs::remove(tempNzb);
+	};
+
+	// 1. Ordinary unnumbered NZB
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"&quot;ordinary.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_ordinary.nzb"
+	);
+
+	// 2. Bracketed text that is not a counter
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[GROUP] - &quot;file.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_bracket_non_counter.nzb"
+	);
+
+	// 3. Zero file ordinal [0/2]
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[0/2] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_zero_ordinal.nzb"
+	);
+
+	// 4. Overflow uint32 in counter [4294967296/2]
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[4294967296/2] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_overflow_ordinal.nzb"
+	);
+
+	// 5. Inconsistent declared totals: [1/3] and [2/2]
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/3] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_inconsistent_total.nzb"
+	);
+
+	// 6. Incomplete ordinal set (missing file 2: [1/3] and [3/3])
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/3] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[3/3] - &quot;file3.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg3@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_incomplete_ordinal.nzb"
+	);
+
+	// 7. Duplicate file ordinals: [1/2] and [1/2]
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_duplicate_ordinal.nzb"
+	);
+
+	// 8. Declared part gap: parts 1 and 3 present, part 2 missing
+	// Part 3 MUST NOT be compacted into position 2. Declared part must remain 3.
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / "nzbget_test_part_gap.nzb";
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/1] - &quot;file1.bin&quot; yEnc (1/3)\">\n"
+			"<groups><group>alt.binaries.test</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"3\">msg1_3@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		BOOST_REQUIRE(nzbFile.Parse());
+
+		auto nzbInfo = nzbFile.DetachNzbInfo();
+		BOOST_REQUIRE(nzbInfo);
+		FileList* fileList = nzbInfo->GetFileList();
+		BOOST_REQUIRE_EQUAL(fileList->size(), 1U);
+
+		FileInfo* fi = fileList->front().get();
+		BOOST_CHECK(!fi->HasFileOrdinal());
+		BOOST_CHECK(!fi->HasTotalFiles());
+		BOOST_CHECK(!fi->HasSegmentIndexBase());
+		BOOST_CHECK_EQUAL(fi->GetMissedArticles(), 1);
+
+		ArticleList* articles = fi->GetArticles();
+		BOOST_REQUIRE_EQUAL(articles->size(), 2U);
+		BOOST_CHECK_EQUAL((*articles)[0]->GetPartNumber(), 1);
+		BOOST_CHECK(!(*articles)[0]->HasSegmentIndex());
+		// Part 3 retains declared part 3, never compacted to 2
+		BOOST_CHECK_EQUAL((*articles)[1]->GetPartNumber(), 3);
+		BOOST_CHECK(!(*articles)[1]->HasSegmentIndex());
+
+		fs::remove(tempNzb);
+	}
+
+	// 9. Duplicate declared parts: segment number 1 declared twice in one file
+	parseAndCheckAllUnset(
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/1] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
+		"<groups><group>alt.binaries.test</group></groups>\n"
+		"<segments>\n"
+		"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
+		"<segment bytes=\"100\" number=\"1\">msg1_1_dupe@test</segment>\n"
+		"</segments>\n"
+		"</file>\n"
+		"</nzb>\n",
+		"nzbget_test_duplicate_part.nzb"
+	);
+
+	// 10. Scheduling/queue order change does not alter already attached fields
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / "nzbget_test_queue_reorder.nzb";
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file1.bin&quot; yEnc (1/2)\">\n"
+			"<groups><group>alt.binaries.test</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\">msg1_2@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
+			"<groups><group>alt.binaries.test</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg2_1@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		BOOST_REQUIRE(nzbFile.Parse());
+
+		auto nzbInfo = nzbFile.DetachNzbInfo();
+		BOOST_REQUIRE(nzbInfo);
+		FileList* fileList = nzbInfo->GetFileList();
+		BOOST_REQUIRE_EQUAL(fileList->size(), 2U);
+
+		FileInfo* f1 = fileList->at(0).get();
+		FileInfo* f2 = fileList->at(1).get();
+
+		// Record values before simulated reorder
+		BOOST_CHECK_EQUAL(f1->GetFileOrdinal().value(), 1U);
+		BOOST_CHECK_EQUAL(f1->GetSegmentIndexBase().value(), 1U);
+		BOOST_CHECK_EQUAL(f1->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
+		BOOST_CHECK_EQUAL(f1->GetArticles()->at(1)->GetSegmentIndex().value(), 2U);
+
+		BOOST_CHECK_EQUAL(f2->GetFileOrdinal().value(), 2U);
+		BOOST_CHECK_EQUAL(f2->GetSegmentIndexBase().value(), 3U);
+		BOOST_CHECK_EQUAL(f2->GetArticles()->at(0)->GetSegmentIndex().value(), 3U);
+
+		// Perturb operational order (simulate queue priority or file reordering)
+		std::vector<FileInfo*> reorderedQueue{ f2, f1 };
+		BOOST_CHECK_EQUAL(reorderedQueue[0]->GetFileOrdinal().value(), 2U);
+		BOOST_CHECK_EQUAL(reorderedQueue[0]->GetSegmentIndexBase().value(), 3U);
+		BOOST_CHECK_EQUAL(reorderedQueue[0]->GetArticles()->at(0)->GetSegmentIndex().value(), 3U);
+
+		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetFileOrdinal().value(), 1U);
+		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetSegmentIndexBase().value(), 1U);
+		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
+		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetArticles()->at(1)->GetSegmentIndex().value(), 2U);
+
+		fs::remove(tempNzb);
+	}
+}
+
 BOOST_AUTO_TEST_SUITE_END()

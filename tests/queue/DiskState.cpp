@@ -386,6 +386,9 @@ BOOST_AUTO_TEST_CASE(DiskStateMalformedAndCorruptTest)
 	// 7. Zero totalFiles when fileOrdinal > 0
 	checkFails(createTemplate("1,0,10", "1,1000,10", "2,1000,11"));
 
+	// 7b. Zero segmentIndexBase when fileOrdinal > 0
+	checkFails(createTemplate("1,1,0", "1,1000,10", "2,1000,11"));
+
 	// 8. Overflow beyond uint32 max
 	checkFails(createTemplate("4294967296,5,10", "1,1000,10", "2,1000,11"));
 	checkFails(createTemplate("1,4294967296,10", "1,1000,10", "2,1000,11"));

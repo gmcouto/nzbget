@@ -1232,7 +1232,7 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 				fileInfo->SetSegmentIndexBase(std::nullopt);
 			}
 		}
-		else if (fileOrdinal >= 1 && totalFiles >= 1 && fileOrdinal <= totalFiles)
+		else if (fileOrdinal >= 1 && totalFiles >= 1 && fileOrdinal <= totalFiles && segmentIndexBase >= 1)
 		{
 			hasFileIdentity = true;
 			if (fileSummary)

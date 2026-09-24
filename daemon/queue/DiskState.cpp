@@ -1225,12 +1225,9 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 		if (fileOrdinal == 0 && totalFiles == 0 && segmentIndexBase == 0)
 		{
 			hasFileIdentity = false;
-			if (fileSummary)
-			{
-				fileInfo->SetFileOrdinal(std::nullopt);
-				fileInfo->SetTotalFiles(std::nullopt);
-				fileInfo->SetSegmentIndexBase(std::nullopt);
-			}
+			fileInfo->SetFileOrdinal(std::nullopt);
+			fileInfo->SetTotalFiles(std::nullopt);
+			fileInfo->SetSegmentIndexBase(std::nullopt);
 		}
 		else if (fileOrdinal >= 1 && totalFiles >= 1 && fileOrdinal <= totalFiles && segmentIndexBase >= 1)
 		{
@@ -1255,12 +1252,9 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 	}
 	else
 	{
-		if (fileSummary)
-		{
-			fileInfo->SetFileOrdinal(std::nullopt);
-			fileInfo->SetTotalFiles(std::nullopt);
-			fileInfo->SetSegmentIndexBase(std::nullopt);
-		}
+		fileInfo->SetFileOrdinal(std::nullopt);
+		fileInfo->SetTotalFiles(std::nullopt);
+		fileInfo->SetSegmentIndexBase(std::nullopt);
 	}
 
 	if (formatVersion >= 5)

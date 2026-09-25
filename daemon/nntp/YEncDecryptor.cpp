@@ -201,6 +201,110 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	return result;
 }
 
+static std::vector<uint8_t> Ff1EncryptNumerals(
+	const uint8_t key[32],
+	const uint8_t* tweak, size_t tweakLen,
+	const std::vector<uint8_t>& numerals,
+	int radix = 253)
+{
+	EVP_CIPHER_CTX* aesCtx = EVP_CIPHER_CTX_new();
+	EVP_EncryptInit_ex(aesCtx, EVP_aes_256_ecb(), nullptr, key, nullptr);
+	EVP_CIPHER_CTX_set_padding(aesCtx, 0);
+
+	BN_CTX* bnCtx = BN_CTX_new();
+	BN_CTX_start(bnCtx);
+
+	int n = static_cast<int>(numerals.size());
+	int t = static_cast<int>(tweakLen);
+	int u = n / 2;
+	int v = n - u;
+	int b = static_cast<int>(std::ceil(std::ceil(v * std::log2(static_cast<double>(radix))) / 8.0));
+	int d = 4 * static_cast<int>(std::ceil(b / 4.0)) + 4;
+
+	std::vector<uint8_t> p(16, 0);
+	p[0] = 1; p[1] = 2; p[2] = 1;
+	p[3] = (radix >> 16) & 0xFF;
+	p[4] = (radix >> 8) & 0xFF;
+	p[5] = radix & 0xFF;
+	p[6] = 10;
+	p[7] = u % 256;
+	p[8] = (n >> 24) & 0xFF; p[9] = (n >> 16) & 0xFF; p[10] = (n >> 8) & 0xFF; p[11] = n & 0xFF;
+	p[12] = (t >> 24) & 0xFF; p[13] = (t >> 16) & 0xFF; p[14] = (t >> 8) & 0xFF; p[15] = t & 0xFF;
+
+	int padLen = ((-t - b - 1) % 16 + 16) % 16;
+	std::vector<uint8_t> qPrefix;
+	qPrefix.insert(qPrefix.end(), tweak, tweak + tweakLen);
+	qPrefix.insert(qPrefix.end(), padLen, 0);
+
+	std::vector<uint8_t> A(numerals.begin(), numerals.begin() + u);
+	std::vector<uint8_t> B(numerals.begin() + u, numerals.end());
+
+	BIGNUM* bnNumB = BN_CTX_get(bnCtx);
+	BIGNUM* bnNumA = BN_CTX_get(bnCtx);
+	BIGNUM* bnY = BN_CTX_get(bnCtx);
+	BIGNUM* bnMod = BN_CTX_get(bnCtx);
+	BIGNUM* bnRadix = BN_CTX_get(bnCtx);
+	BIGNUM* bnC = BN_CTX_get(bnCtx);
+	BN_set_word(bnRadix, radix);
+
+	for (int i = 0; i < 10; ++i)
+	{
+		NumRadix(B, radix, bnNumB, bnCtx);
+		std::vector<uint8_t> numBBytes(b, 0);
+		BN_bn2binpad(bnNumB, numBBytes.data(), b);
+
+		std::vector<uint8_t> q = qPrefix;
+		q.push_back(static_cast<uint8_t>(i));
+		q.insert(q.end(), numBBytes.begin(), numBBytes.end());
+
+		std::vector<uint8_t> pq = p;
+		pq.insert(pq.end(), q.begin(), q.end());
+
+		std::vector<uint8_t> R = CbcMac(aesCtx, pq);
+		std::vector<uint8_t> S = R;
+		uint32_t j = 1;
+		while (S.size() < static_cast<size_t>(d))
+		{
+			uint8_t jBytes[16] = {0};
+			jBytes[12] = (j >> 24) & 0xFF;
+			jBytes[13] = (j >> 16) & 0xFF;
+			jBytes[14] = (j >> 8) & 0xFF;
+			jBytes[15] = j & 0xFF;
+
+			uint8_t blk[16];
+			for (int k = 0; k < 16; ++k) blk[k] = R[k] ^ jBytes[k];
+			uint8_t encBlk[16];
+			AesEcbEncrypt(aesCtx, blk, encBlk);
+			S.insert(S.end(), encBlk, encBlk + 16);
+			j++;
+		}
+
+		BN_bin2bn(S.data(), d, bnY);
+		int m = (i % 2 == 0) ? u : v;
+
+		BIGNUM* bnM = BN_CTX_get(bnCtx);
+		BN_set_word(bnM, m);
+		BN_exp(bnMod, bnRadix, bnM, bnCtx);
+
+		NumRadix(A, radix, bnNumA, bnCtx);
+
+		BN_add(bnC, bnNumA, bnY);
+		BN_nnmod(bnC, bnC, bnMod, bnCtx);
+
+		std::vector<uint8_t> C = StrRadix(bnC, radix, m, bnCtx);
+		A = B;
+		B = C;
+	}
+
+	std::vector<uint8_t> result = A;
+	result.insert(result.end(), B.begin(), B.end());
+
+	BN_CTX_end(bnCtx);
+	BN_CTX_free(bnCtx);
+	EVP_CIPHER_CTX_free(aesCtx);
+	return result;
+}
+
 static bool HexToBytes(const char* hex, size_t hexLen, uint8_t* outBytes, size_t outLen)
 {
 	if (hexLen != outLen * 2)
@@ -213,6 +317,47 @@ static bool HexToBytes(const char* hex, size_t hexLen, uint8_t* outBytes, size_t
 			if (c >= '0' && c <= '9') return c - '0';
 			if (c >= 'a' && c <= 'f') return c - 'a' + 10;
 			if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+			return -1;
+		};
+		int hi = hexVal(hex[i * 2]);
+		int lo = hexVal(hex[i * 2 + 1]);
+		if (hi < 0 || lo < 0)
+		{
+			return false;
+		}
+		outBytes[i] = static_cast<uint8_t>((hi << 4) | lo);
+	}
+	return true;
+}
+
+static bool IsStrictLowerHex(const char* s, size_t len)
+{
+	for (size_t i = 0; i < len; ++i)
+	{
+		char c = s[i];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool HexToBytesStrict(const char* hex, size_t hexLen, uint8_t* outBytes, size_t outLen)
+{
+	if (hexLen != outLen * 2)
+	{
+		return false;
+	}
+	if (!IsStrictLowerHex(hex, hexLen))
+	{
+		return false;
+	}
+	for (size_t i = 0; i < outLen; ++i)
+	{
+		auto hexVal = [](char c) -> int {
+			if (c >= '0' && c <= '9') return c - '0';
+			if (c >= 'a' && c <= 'f') return c - 'a' + 10;
 			return -1;
 		};
 		int hi = hexVal(hex[i * 2]);
@@ -402,11 +547,18 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 
 	if (isLine1)
 	{
-		if (wireLen < 16)
+		if (wireLen < 18)
 		{
 			return Status::Error;
 		}
 		const uint8_t* salt = wireData;
+		for (size_t i = 0; i < 16; ++i)
+		{
+			if (salt[i] == 0x00 || salt[i] == 0x0A || salt[i] == 0x0D)
+			{
+				return Status::Error;
+			}
+		}
 		if (outSalt)
 		{
 			outSalt->assign(salt, salt + 16);
@@ -420,10 +572,19 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	}
 	else
 	{
+		if (wireLen < 2)
+		{
+			return Status::Error;
+		}
 		if (m_cachedMasterKey.empty())
 		{
 			return Status::Error;
 		}
+	}
+
+	if (ctLen < 2)
+	{
+		return Status::Error;
 	}
 
 	uint8_t encKey[32];
@@ -480,61 +641,221 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 bool YEncDecryptor::ParseYEncryption(
 	const char* line,
 	size_t lineLen,
-	std::string& outCipher,
-	uint8_t outSalt[16],
-	uint8_t outTag[16])
+	YEncryptionHeader& outHeader)
 {
 	if (!line || lineLen < 13)
 	{
 		return false;
 	}
-
-	if (strncmp(line, "=yencryption ", 13) != 0)
+	while (lineLen > 0 && (line[lineLen - 1] == '\r' || line[lineLen - 1] == '\n'))
 	{
-		return false;
+		--lineLen;
 	}
 
-	std::string s(line, lineLen);
-	// Remove trailing CR/LF
-	while (!s.empty() && (s.back() == '\r' || s.back() == '\n'))
+	std::vector<std::string_view> tokens;
+	size_t start = 0;
+	for (size_t i = 0; i <= lineLen; ++i)
 	{
-		s.pop_back();
-	}
-
-	// Parse parameters: cipher=... salt=... tag=...
-	auto extractParam = [&s](const std::string& key) -> std::string {
-		size_t pos = s.find(key + "=");
-		if (pos == std::string::npos) return "";
-		// Check word boundary before key
-		if (pos != 0 && s[pos - 1] != ' ') return "";
-		pos += key.length() + 1;
-		size_t endPos = s.find(' ', pos);
-		if (endPos == std::string::npos)
+		if (i == lineLen || line[i] == ' ')
 		{
-			return s.substr(pos);
+			if (i == start)
+			{
+				return false;
+			}
+			tokens.emplace_back(line + start, i - start);
+			start = i + 1;
 		}
-		return s.substr(pos, endPos - pos);
+	}
+	if (tokens.size() != 4 || tokens[0] != "=yencryption" || tokens[1] != "cipher=XChaCha20-Poly1305")
+	{
+		return false;
+	}
+	if (tokens[2].rfind("salt=", 0) != 0 || tokens[3].rfind("tag=", 0) != 0)
+	{
+		return false;
+	}
+	const std::string_view saltHex = tokens[2].substr(5);
+	const std::string_view tagHex = tokens[3].substr(4);
+	if (saltHex.size() != 32 || tagHex.size() != 32 ||
+		!IsStrictLowerHex(saltHex.data(), saltHex.size()) || !IsStrictLowerHex(tagHex.data(), tagHex.size()))
+	{
+		return false;
+	}
+
+	outHeader.cipher = "XChaCha20-Poly1305";
+	outHeader.saltHex = std::string(saltHex);
+	outHeader.tagHex = std::string(tagHex);
+	outHeader.salt.resize(16);
+	outHeader.tag.resize(16);
+	return HexToBytesStrict(saltHex.data(), saltHex.size(), outHeader.salt.data(), outHeader.salt.size()) &&
+		HexToBytesStrict(tagHex.data(), tagHex.size(), outHeader.tag.data(), outHeader.tag.size());
+}
+
+bool YEncDecryptor::ParseYEncryption(
+	const char* line,
+	size_t lineLen,
+	std::string& outCipher,
+	uint8_t outSalt[16],
+	uint8_t outTag[16])
+{
+	YEncryptionHeader header;
+	if (!ParseYEncryption(line, lineLen, header))
+	{
+		return false;
+	}
+	outCipher = header.cipher;
+	memcpy(outSalt, header.salt.data(), 16);
+	memcpy(outTag, header.tag.data(), 16);
+	return true;
+}
+
+YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
+	const uint8_t* plainData,
+	size_t plainLen,
+	uint32_t segmentIndex,
+	uint32_t lineIndex,
+	bool isLine1,
+	const uint8_t salt[16],
+	std::vector<uint8_t>& outWireData)
+{
+	outWireData.clear();
+	if (!EnsureMasterKey(salt))
+	{
+		return Status::Error;
+	}
+
+	uint8_t encKey[32];
+	uint8_t tweak[8];
+	if (!DeriveControlKeyAndTweak(segmentIndex, lineIndex, encKey, tweak))
+	{
+		return Status::Error;
+	}
+
+	std::vector<uint8_t> plainNumerals;
+	plainNumerals.reserve(plainLen);
+	try
+	{
+		for (size_t i = 0; i < plainLen; ++i)
+		{
+			plainNumerals.push_back(ByteToNumeral(plainData[i]));
+		}
+		const auto cipherNumerals = Ff1EncryptNumerals(encKey, tweak, 8, plainNumerals, 253);
+		if (isLine1)
+		{
+			outWireData.insert(outWireData.end(), salt, salt + 16);
+		}
+		for (uint8_t numeral : cipherNumerals)
+		{
+			outWireData.push_back(NumeralToByte(numeral));
+		}
+	}
+	catch (...)
+	{
+		outWireData.clear();
+		sodium_memzero(encKey, sizeof(encKey));
+		sodium_memzero(tweak, sizeof(tweak));
+		return Status::Error;
+	}
+	sodium_memzero(encKey, sizeof(encKey));
+	sodium_memzero(tweak, sizeof(tweak));
+	return Status::Ok;
+}
+
+bool YEncDecryptor::RestoreControlLines(
+	const char* wireBlock,
+	size_t wireLen,
+	uint32_t segmentIndex,
+	std::string& outCleanBlock,
+	std::vector<uint8_t>& outLine1Salt,
+	YEncryptionHeader* outHeader)
+{
+	outCleanBlock.clear();
+	outLine1Salt.clear();
+	if (!wireBlock || wireLen == 0 || segmentIndex == 0)
+	{
+		return false;
+	}
+
+	struct WireLine
+	{
+		const char* data;
+		size_t len;
+		std::string_view ending;
 	};
-
-	std::string cipherVal = extractParam("cipher");
-	std::string saltVal = extractParam("salt");
-	std::string tagVal = extractParam("tag");
-
-	if (cipherVal.empty() || cipherVal != "XChaCha20-Poly1305")
+	std::vector<WireLine> lines;
+	const char* cursor = wireBlock;
+	const char* end = wireBlock + wireLen;
+	while (cursor < end)
+	{
+		const char* newline = static_cast<const char*>(memchr(cursor, '\n', end - cursor));
+		const char* lineEnd = newline ? newline : end;
+		const bool crlf = lineEnd > cursor && lineEnd[-1] == '\r';
+		lines.push_back({cursor, static_cast<size_t>((crlf ? lineEnd - 1 : lineEnd) - cursor),
+			newline ? (crlf ? std::string_view("\r\n", 2) : std::string_view("\n", 1)) : std::string_view()});
+		cursor = newline ? newline + 1 : end;
+	}
+	if (!lines.empty() && lines.back().len == 1 && lines.back().data[0] == '.')
+	{
+		lines.pop_back();
+	}
+	if (lines.size() < 3)
 	{
 		return false;
 	}
 
-	if (saltVal.length() != 32 || !HexToBytes(saltVal.data(), 32, outSalt, 16))
+	std::vector<uint8_t> restored;
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[0].data), lines[0].len,
+		segmentIndex, 1, true, restored, &outLine1Salt) != Status::Ok ||
+		restored.size() < 8 || memcmp(restored.data(), "=ybegin ", 8) != 0)
 	{
 		return false;
 	}
-
-	if (tagVal.length() != 32 || !HexToBytes(tagVal.data(), 32, outTag, 16))
+	const std::string begin(restored.begin(), restored.end());
+	outCleanBlock.append(begin).append(lines[0].ending);
+	const bool multipart = begin.find(" part=") != std::string::npos;
+	const size_t headerIndex = multipart ? 2 : 1;
+	if (multipart)
 	{
+		if (lines.size() < 4 || DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[1].data), lines[1].len,
+			segmentIndex, 2, false, restored) != Status::Ok || restored.size() < 7 ||
+			memcmp(restored.data(), "=ypart ", 7) != 0)
+		{
+			return false;
+		}
+		outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(lines[1].ending);
+	}
+
+	YEncryptionHeader header;
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[headerIndex].data), lines[headerIndex].len,
+		segmentIndex, static_cast<uint32_t>(headerIndex + 1), false, restored) != Status::Ok ||
+		!ParseYEncryption(reinterpret_cast<const char*>(restored.data()), restored.size(), header) ||
+		header.salt != outLine1Salt)
+	{
+		outCleanBlock.clear();
+		outLine1Salt.clear();
 		return false;
 	}
 
-	outCipher = cipherVal;
+	for (size_t i = headerIndex + 1; i + 1 < lines.size(); ++i)
+	{
+		if (lines[i].len >= 13 && memcmp(lines[i].data, "=yencryption ", 13) == 0)
+		{
+			return false;
+		}
+		outCleanBlock.append(lines[i].data, lines[i].len).append(lines[i].ending);
+	}
+
+	const size_t footerIndex = lines.size() - 1;
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[footerIndex].data), lines[footerIndex].len,
+		segmentIndex, static_cast<uint32_t>(lines.size()), false, restored) != Status::Ok ||
+		restored.size() < 5 || memcmp(restored.data(), "=yend", 5) != 0)
+	{
+		return false;
+	}
+	outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(lines[footerIndex].ending);
+	if (outHeader)
+	{
+		*outHeader = std::move(header);
+	}
 	return true;
 }

@@ -79,6 +79,29 @@ public:
 		std::vector<uint8_t>* outSalt = nullptr
 	);
 
+	struct YEncryptionHeader
+	{
+		std::string cipher;
+		std::string saltHex;
+		std::string tagHex;
+		std::vector<uint8_t> salt;
+		std::vector<uint8_t> tag;
+	};
+
+	static bool ParseYEncryption(
+		const char* line,
+		size_t lineLen,
+		YEncryptionHeader& outHeader
+	);
+
+	static bool ParseYEncryption(
+		const char* line,
+		YEncryptionHeader& outHeader
+	)
+	{
+		return ParseYEncryption(line, line ? strlen(line) : 0, outHeader);
+	}
+
 	// Static helper to parse =yencryption line
 	static bool ParseYEncryption(
 		const char* line,
@@ -86,6 +109,25 @@ public:
 		std::string& outCipher,
 		uint8_t outSalt[16],
 		uint8_t outTag[16]
+	);
+
+	bool RestoreControlLines(
+		const char* wireBlock,
+		size_t wireLen,
+		uint32_t segmentIndex,
+		std::string& outCleanBlock,
+		std::vector<uint8_t>& outLine1Salt,
+		YEncryptionHeader* outHeader = nullptr
+	);
+
+	Status EncryptControlLine(
+		const uint8_t* plainData,
+		size_t plainLen,
+		uint32_t segmentIndex,
+		uint32_t lineIndex,
+		bool isLine1,
+		const uint8_t salt[16],
+		std::vector<uint8_t>& outWireData
 	);
 
 	size_t GetCachedSaltCount() const { return m_cachedSalt.empty() ? 0 : 1; }

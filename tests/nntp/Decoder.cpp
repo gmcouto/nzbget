@@ -22,6 +22,10 @@
 #include <boost/test/unit_test.hpp>
 #include "Decoder.h"
 #include "YEncoder.h"
+#include "YEncDecryptor.h"
+#include <sodium.h>
+#include <iomanip>
+#include <sstream>
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
 
@@ -270,6 +274,258 @@ BOOST_AUTO_TEST_CASE(BufferOverflowTest)
 	int len = decoder.DecodeBuffer(buf.get(), bufSize);
 	BOOST_CHECK_EQUAL(len, bufSize);
 	BOOST_CHECK_EQUAL(decoder.GetEof(), false);
+}
+
+static std::vector<uint8_t> HexToBytesHelper(const std::string& hex)
+{
+	std::vector<uint8_t> bytes;
+	for (size_t i = 0; i < hex.length(); i += 2)
+	{
+		unsigned int byteVal = 0;
+		sscanf(hex.c_str() + i, "%02x", &byteVal);
+		bytes.push_back(static_cast<uint8_t>(byteVal));
+	}
+	return bytes;
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
+{
+	// Vector from body_encryption.json: body-vec-01-spec-example
+	// password: "test123", salt: "1a2b3c4d5e6f7890abcdef1234567890", segmentIndex: 1
+	// plaintext: "Hello World.txt\xff" (16 bytes)
+	// ciphertext: 6a0d1eb225f844920540fa382ff68874
+	// tag: 0cd77ce245a654463f90b945b1d22d5b
+	std::string password = "test123";
+	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> tag = HexToBytesHelper("0cd77ce245a654463f90b945b1d22d5b");
+	std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	uint32_t segmentIndex = 1;
+
+	// Build raw wire article:
+	// line 1: =ybegin line=128 size=16 name=test.dat
+	// line 2: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b
+	// line 3: <yenc encoded ct>
+	// line 4: =yend size=16 crc32=...
+	// line 5: .
+	YEncDecryptor encDec(password);
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
+
+	// Calculate ciphertext CRC32
+	Crc32 crc;
+	crc.Append(ct.data(), ct.size());
+	uint32_t ctCrc = crc.Finish();
+	std::ostringstream endOss;
+	endOss << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << ctCrc;
+	std::string line4Plain = endOss.str();
+
+	std::vector<uint8_t> wireLine4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+		segmentIndex, 4, false, salt.data(), wireLine4
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	fullWire.append("\r\n");
+	fullWire.append(wireLine3);
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+	fullWire.append("\r\n.\r\n");
+
+	// Test feed in chunks
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+	decoder.SetSegmentIndex(segmentIndex);
+	decoder.SetCrcCheck(true);
+
+	size_t chunkSize = 32;
+	for (size_t offset = 0; offset < fullWire.size(); offset += chunkSize)
+	{
+		size_t n = std::min(chunkSize, fullWire.size() - offset);
+		std::string chunk = fullWire.substr(offset, n);
+		decoder.DecodeBuffer(chunk.data(), static_cast<int>(chunk.size()));
+	}
+
+	auto status = decoder.Check();
+	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(Decoder::dsFinished));
+	BOOST_CHECK_EQUAL(decoder.GetArticleFilename(), "test.dat");
+	BOOST_CHECK(decoder.IsEncrypted());
+	BOOST_CHECK_EQUAL(decoder.GetExpectedCrc(), ctCrc);
+	BOOST_CHECK_EQUAL(decoder.GetCalculatedCrc(), ctCrc);
+
+	const auto& pt = decoder.GetDecryptedData();
+	BOOST_CHECK_EQUAL(pt.size(), expectedPlaintext.size());
+	BOOST_CHECK_EQUAL_COLLECTIONS(pt.begin(), pt.end(), expectedPlaintext.begin(), expectedPlaintext.end());
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
+{
+	std::string password = "test123";
+	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> tag = HexToBytesHelper("0cd77ce245a654463f90b945b1d22d5b");
+	std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	uint32_t segmentIndex = 1;
+
+	// Multipart lines:
+	// line 1: =ybegin part=1 total=2 line=128 size=32 name=multi.dat
+	// line 2: =ypart begin=1 end=16
+	// line 3: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b
+	// line 4: <yenc encoded ct>
+	// line 5: =yend size=16 part=1 pcrc32=...
+	// line 6: .
+	YEncDecryptor encDec(password);
+	std::string line1Plain = "=ybegin part=1 total=2 line=128 size=32 name=multi.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=ypart begin=1 end=16";
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line3Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::vector<uint8_t> wireLine3;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line3Plain.data()), line3Plain.size(),
+		segmentIndex, 3, false, salt.data(), wireLine3
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wireLine4 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
+
+	Crc32 crc;
+	crc.Append(ct.data(), ct.size());
+	uint32_t ctCrc = crc.Finish();
+	std::ostringstream endOss;
+	endOss << "=yend size=16 part=1 pcrc32=" << std::hex << std::setw(8) << std::setfill('0') << ctCrc;
+	std::string line5Plain = endOss.str();
+
+	std::vector<uint8_t> wireLine5;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line5Plain.data()), line5Plain.size(),
+		segmentIndex, 5, false, salt.data(), wireLine5
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine3.data()), wireLine3.size());
+	fullWire.append("\r\n");
+	fullWire.append(wireLine4);
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine5.data()), wireLine5.size());
+	fullWire.append("\r\n.\r\n");
+
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+	decoder.SetSegmentIndex(segmentIndex);
+	decoder.SetCrcCheck(true);
+
+	size_t chunkSize = 25;
+	for (size_t offset = 0; offset < fullWire.size(); offset += chunkSize)
+	{
+		size_t n = std::min(chunkSize, fullWire.size() - offset);
+		std::string chunk = fullWire.substr(offset, n);
+		decoder.DecodeBuffer(chunk.data(), static_cast<int>(chunk.size()));
+	}
+
+	auto status = decoder.Check();
+	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(Decoder::dsFinished));
+	BOOST_CHECK_EQUAL(decoder.GetArticleFilename(), "multi.dat");
+	BOOST_CHECK_EQUAL(decoder.GetBeginPos(), 1);
+	BOOST_CHECK_EQUAL(decoder.GetEndPos(), 16);
+	BOOST_CHECK(decoder.IsEncrypted());
+	BOOST_CHECK_EQUAL(decoder.GetExpectedCrc(), ctCrc);
+	BOOST_CHECK_EQUAL(decoder.GetCalculatedCrc(), ctCrc);
+
+	const auto& pt = decoder.GetDecryptedData();
+	BOOST_CHECK_EQUAL(pt.size(), expectedPlaintext.size());
+	BOOST_CHECK_EQUAL_COLLECTIONS(pt.begin(), pt.end(), expectedPlaintext.begin(), expectedPlaintext.end());
+}
+
+BOOST_AUTO_TEST_CASE(DecoderMissingSegmentIndexFailsClosedTest)
+{
+	std::string password = "test123";
+	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	uint32_t segmentIndex = 1;
+
+	YEncDecryptor encDec(password);
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
+
+	Crc32 crc;
+	crc.Append(ct.data(), ct.size());
+	uint32_t ctCrc = crc.Finish();
+	std::ostringstream endOss;
+	endOss << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << ctCrc;
+	std::string line4Plain = endOss.str();
+
+	std::vector<uint8_t> wireLine4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+		segmentIndex, 4, false, salt.data(), wireLine4
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	fullWire.append("\r\n");
+	fullWire.append(wireLine3);
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+	fullWire.append("\r\n.\r\n");
+
+	// Test with segmentIndex = 0 (missing segmentIndex)
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+	decoder.SetSegmentIndex(0); // explicitly zero
+	decoder.SetCrcCheck(true);
+
+	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+
+	auto checkStatus = decoder.Check();
+	// Must fail closed with dsAuthFailed, dsNoBinaryData, or dsUnknownError
+	BOOST_CHECK(checkStatus == Decoder::dsAuthFailed || checkStatus == Decoder::dsNoBinaryData || checkStatus == Decoder::dsUnknownError);
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

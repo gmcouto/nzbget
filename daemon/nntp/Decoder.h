@@ -24,6 +24,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 #include <cstdint>
 #include "NString.h"
 #include "Util.h"
@@ -52,6 +53,7 @@ public:
 	};
 
 	Decoder();
+	~Decoder();
 	EStatus Check();
 	void Clear();
 	int DecodeBuffer(char* buffer, int len);
@@ -66,6 +68,7 @@ public:
 	bool GetEof() { return m_eof; }
 	const char* GetArticleFilename() { return m_articleFilename.c_str(); }
 
+	void SetPassword(const char* password);
 	void SetDecryptor(YEncDecryptor* decryptor) { m_decryptor = decryptor; }
 	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
 	bool IsEncrypted() const { return m_encrypted; }
@@ -126,6 +129,7 @@ private:
 	StringBuilder m_lineBuf;
 	Crc32 m_crc32;
 	YEncDecryptor* m_decryptor = nullptr;
+	std::unique_ptr<YEncDecryptor> m_ownDecryptor;
 	uint32 m_segmentIndex = 0;
 	bool m_encrypted = false;
 	bool m_authFailed = false;
@@ -135,6 +139,11 @@ private:
 	std::vector<uint8_t> m_cipherPayload;
 	std::vector<uint8_t> m_decryptedPlaintext;
 
+	bool m_encryptedWireMode = false;
+	bool m_wireProcessed = false;
+	std::string m_wireBuffer;
+
+	void ProcessRestoredBlock(const std::string& wireBlock);
 	EFormat DetectFormat(const char* buffer, int len);
 	void ProcessYenc(char* buffer, int len);
 	void ParseEncryption(const char* buffer, int len);

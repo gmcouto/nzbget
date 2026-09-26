@@ -226,7 +226,7 @@ void UnpackController::UnpackArchives(EUnpacker unpacker, bool multiVolumes)
 			(m_unpackDecryptError || m_unpackPasswordError) &&
 			infile.ReadLine(password, sizeof(password) - 1))
 		{
-			debug("Password line: %s", password);
+			debug("Password line: <redacted>");
 			// trim trailing <CR> and <LF>
 			char* end = password + strlen(password) - 1;
 			while (end >= password && (*end == '\n' || *end == '\r')) *end-- = '\0';
@@ -241,7 +241,7 @@ void UnpackController::UnpackArchives(EUnpacker unpacker, bool multiVolumes)
 				m_unpackDecryptError = false;
 				m_unpackPasswordError = false;
 				m_autoTerminated = false;
-				PrintMessage(Message::mkInfo, "Trying password %s for %s", password, *m_name);
+				PrintMessage(Message::mkInfo, "Trying password <redacted> for %s", *m_name);
 				ExecuteUnpack(unpacker, password, multiVolumes);
 			}
 		}

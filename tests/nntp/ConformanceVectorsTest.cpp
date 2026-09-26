@@ -15,6 +15,13 @@
 #include <boost/test/unit_test.hpp>
 
 #include "YEncDecryptor.h"
+#include "NzbFile.h"
+#include "DownloadInfo.h"
+#include "ArticleWriter.h"
+#include "ArticleDownloader.h"
+#include "Options.h"
+#include "Decoder.h"
+#include "Log.h"
 
 #include <filesystem>
 #include <fstream>
@@ -349,6 +356,177 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			}
 		}
 	}
+}
+
+BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
+{
+	Options::CmdOptList cmdOpts;
+	std::string destOpt = "DestDir=" + std::filesystem::temp_directory_path().string();
+	std::string interOpt = "InterDir=";
+	cmdOpts.push_back(destOpt.c_str());
+	cmdOpts.push_back(interOpt.c_str());
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	const auto fixture = LoadFixture("nzb_segment_identity.json");
+	const auto& vectors = fixture.at("vectors").as_array();
+	BOOST_REQUIRE_EQUAL(vectors.size(), 33U);
+
+	for (const auto& item : vectors)
+	{
+		const auto& vector = item.as_object();
+		const std::string id = JsonString(vector, "id");
+		const std::string category = JsonString(vector, "category");
+		BOOST_TEST_CONTEXT(id)
+		{
+			const std::filesystem::path tempNzb = std::filesystem::temp_directory_path() / (id + ".nzb");
+			{
+				std::ofstream output(tempNzb, std::ios::binary);
+				output << JsonString(vector, "nzb_xml");
+			}
+
+			NzbFile nzbFile(tempNzb.string().c_str(), "");
+			bool parsed = nzbFile.Parse();
+			std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+			std::filesystem::remove(tempNzb);
+
+			if (category == "valid_identity")
+			{
+				BOOST_REQUIRE(parsed);
+				BOOST_REQUIRE(nzbInfo);
+				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
+
+				std::unordered_map<std::string, uint32_t> actual;
+				for (const auto& fileInfo : *nzbInfo->GetFileList())
+				{
+					for (const auto& article : *fileInfo->GetArticles())
+					{
+						BOOST_REQUIRE(article->HasSegmentIndex());
+						std::string mid = article->GetMessageId();
+						if (mid.size() >= 2 && mid.front() == '<' && mid.back() == '>')
+						{
+							mid = mid.substr(1, mid.size() - 2);
+						}
+						actual[mid] = article->GetSegmentIndex().value();
+					}
+				}
+
+				for (const auto& expectedItem : vector.at("expected_segments").as_array())
+				{
+					const auto& expected = expectedItem.as_object();
+					const std::string mid = JsonString(expected, "message_id");
+					BOOST_REQUIRE(actual.find(mid) != actual.end());
+					BOOST_CHECK_EQUAL(actual[mid], JsonUint32(expected, "segment_index"));
+				}
+			}
+			else if (category == "invalid_identity")
+			{
+				if (id == "nzb-invalid-17-missing-index-encrypted")
+				{
+					// Password-only without explicit encryption provenance is an archive password release.
+					BOOST_REQUIRE(parsed);
+					BOOST_REQUIRE(nzbInfo);
+					BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
+				}
+				else
+				{
+					BOOST_CHECK(!parsed);
+					BOOST_REQUIRE(nzbInfo);
+					const std::string expectedError = JsonString(vector, "expected_error");
+					bool found = false;
+					for (Message& message : nzbInfo->GuardCachedMessages())
+					{
+						if (std::string(message.GetText()).find(expectedError) != std::string::npos)
+						{
+							found = true;
+							break;
+						}
+					}
+					BOOST_CHECK(found);
+				}
+			}
+			else if (category == "unencrypted_compatibility")
+			{
+				BOOST_REQUIRE(parsed);
+				BOOST_REQUIRE(nzbInfo);
+				BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
+				for (const auto& fileInfo : *nzbInfo->GetFileList())
+				{
+					for (const auto& article : *fileInfo->GetArticles())
+					{
+						BOOST_CHECK(!article->HasSegmentIndex());
+					}
+				}
+			}
+			else if (category == "index_tampering")
+			{
+				BOOST_REQUIRE(parsed);
+				BOOST_REQUIRE(nzbInfo);
+				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
+
+				YEncDecryptor decryptor(JsonString(vector, "password"));
+				const auto salt = HexToBin(JsonString(vector, "salt_hex"));
+				std::vector<uint8_t> plaintext;
+
+				if (id == "nzb-tamper-01-index-mismatch-zero-output")
+				{
+					const auto ciphertext = HexToBin(JsonString(vector, "ciphertext_hex"));
+					const auto tag = HexToBin(JsonString(vector, "tag_hex"));
+					const auto status = decryptor.AuthenticateAndDecrypt(
+						ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
+						JsonUint32(vector, "tampered_segment_index"), plaintext);
+					BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
+					BOOST_CHECK(plaintext.empty());
+				}
+				else
+				{
+					for (const auto& segmentItem : vector.at("tampered_segments").as_array())
+					{
+						const auto& segment = segmentItem.as_object();
+						const auto ciphertext = HexToBin(JsonString(segment, "ciphertext_hex"));
+						const auto tag = HexToBin(JsonString(segment, "tag_hex"));
+						plaintext.clear();
+						YEncDecryptor segmentDecryptor(JsonString(vector, "password"));
+						const auto status = segmentDecryptor.AuthenticateAndDecrypt(
+							ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
+							JsonUint32(segment, "tampered_segment_index"), plaintext);
+						BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
+						BOOST_CHECK(plaintext.empty());
+					}
+				}
+			}
+		}
+	}
+
+	g_Options = oldOptions;
+}
+
+BOOST_AUTO_TEST_CASE(ProviderFailoverOnAuthFailureTest)
+{
+	YEncDecryptor decryptor("test123");
+	const auto salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const auto ciphertext = HexToBin("710d1cad23ac7a8b120cee7a3ae792ffd31b1ae3e45f4ee6cb4b53288255b474a89845bd8daf7976f9dd2ce836a0f4d675");
+	const auto tag = HexToBin("244b59a79fd448b7d2fa6fdd378e3153");
+	std::vector<uint8_t> plaintext;
+
+	// Provider 1 uses tampered NZB index 2: auth failure and zero output.
+	auto status = decryptor.AuthenticateAndDecrypt(
+		ciphertext.data(), ciphertext.size(), salt.data(), tag.data(), 2, plaintext);
+	BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
+	BOOST_CHECK(plaintext.empty());
+	ArticleDownloader::EStatus firstProvider = status == YEncDecryptor::Status::AuthFailed ?
+		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
+	BOOST_CHECK(firstProvider == ArticleDownloader::adFailed);
+
+	// Provider 2 uses authoritative index 1: authenticated plaintext succeeds.
+	status = decryptor.AuthenticateAndDecrypt(
+		ciphertext.data(), ciphertext.size(), salt.data(), tag.data(), 1, plaintext);
+	BOOST_CHECK(status == YEncDecryptor::Status::Ok);
+	BOOST_CHECK(!plaintext.empty());
+	ArticleDownloader::EStatus secondProvider = status == YEncDecryptor::Status::Ok ?
+		ArticleDownloader::adFinished : ArticleDownloader::adFailed;
+	BOOST_CHECK(secondProvider == ArticleDownloader::adFinished);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

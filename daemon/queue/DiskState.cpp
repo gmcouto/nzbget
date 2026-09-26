@@ -1351,20 +1351,17 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 
 			if (formatVersion >= 8)
 			{
-				if (hasFileIdentity)
+				if (hasFileIdentity && segmentIndex == 0)
 				{
-					if (segmentIndex == 0)
-					{
-						goto error;
-					}
+					goto error;
+				}
+
+				if (segmentIndex != 0)
+				{
 					articleInfo->SetSegmentIndex(segmentIndex);
 				}
 				else
 				{
-					if (segmentIndex != 0)
-					{
-						goto error;
-					}
 					articleInfo->SetSegmentIndex(std::nullopt);
 				}
 			}

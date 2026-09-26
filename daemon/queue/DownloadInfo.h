@@ -110,6 +110,9 @@ public:
 	void SetSegmentIndex(std::optional<uint32> segmentIndex) { m_segmentIndex = segmentIndex; }
 	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
 	bool HasSegmentIndex() const { return m_segmentIndex.has_value(); }
+	bool HasRawSegmentIndex() const { return m_hasRawSegmentIndex; }
+	const char* GetRawSegmentIndex() const { return m_rawSegmentIndex.c_str(); }
+	void SetRawSegmentIndex(const char* rawIndex) { m_rawSegmentIndex = rawIndex ? rawIndex : ""; m_hasRawSegmentIndex = true; }
 
 private:
 	std::unique_ptr<SegmentData> m_segmentContent;
@@ -117,6 +120,8 @@ private:
 	std::atomic<int> m_segmentSize{0};
 	std::atomic<uint32> m_crc{0};
 	std::optional<uint32> m_segmentIndex;
+	std::string m_rawSegmentIndex;
+	bool m_hasRawSegmentIndex = false;
 	CString m_messageId;
 	CString m_resultFilename;
 	EStatus m_status = aiUndefined;
@@ -658,6 +663,15 @@ public:
 	{
 		const char* pwd = GetParameter("*Unpack:Password");
 		return (pwd && pwd[0] != '\0') ? pwd : "";
+	}
+	bool IsYEncEncrypted() const
+	{
+		const char* enc = GetParameter("*Unpack:YEncEncrypted");
+		return enc != nullptr && !strcasecmp(enc, "yes");
+	}
+	void SetYEncEncrypted(bool encrypted)
+	{
+		m_ppParameters.SetParameter("*Unpack:YEncEncrypted", encrypted ? "yes" : "");
 	}
 	ScriptStatusList* GetScriptStatuses() { return &m_scriptStatuses; }
 	ServerStatList* GetServerStats() { return &m_serverStats; }

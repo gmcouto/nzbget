@@ -24,6 +24,8 @@
 #include <charconv>
 #include <limits>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
 #include "NzbFile.h"
 #include "Log.h"
 #include "DownloadInfo.h"
@@ -317,143 +319,155 @@ bool NzbFile::ParseFileCounter(std::string_view subject, uint32& fileOrdinal, ui
 	return true;
 }
 
-void NzbFile::CalculateSegmentIndices()
+bool NzbFile::ParseSegmentIndex(std::string_view valStr, uint32& outVal, std::string& errToken)
 {
-	FileList* fileList = m_nzbInfo->GetFileList();
-	if (fileList->empty())
+	if (valStr.empty())
 	{
-		return;
+		errToken = "INVALID_SEGMENT_INDEX_EMPTY";
+		return false;
 	}
 
-	size_t totalParsed = fileList->size();
-	if (totalParsed > std::numeric_limits<uint32>::max())
+	if (valStr == "0")
 	{
-		return;
+		errToken = "INVALID_SEGMENT_INDEX_ZERO";
+		return false;
 	}
-	uint32 totalFilesCount = static_cast<uint32>(totalParsed);
 
-	bool hasValidIdentity = true;
-
-	// Check that every file has valid ordinal and matching totalFiles
-	for (FileInfo* fileInfo : fileList)
+	if (valStr[0] == '+' || valStr[0] == '-')
 	{
-		if (!fileInfo->HasFileOrdinal() || !fileInfo->HasTotalFiles())
+		errToken = "INVALID_SEGMENT_INDEX_SIGN";
+		return false;
+	}
+
+	for (char c : valStr)
+	{
+		if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
 		{
-			hasValidIdentity = false;
+			errToken = "INVALID_SEGMENT_INDEX_WHITESPACE";
+			return false;
+		}
+	}
+
+	bool allDigits = true;
+	for (char c : valStr)
+	{
+		if (c < '0' || c > '9')
+		{
+			allDigits = false;
 			break;
 		}
-		if (fileInfo->GetTotalFiles().value() != totalFilesCount)
+	}
+
+	if (valStr.size() > 1 && valStr[0] == '0' && allDigits)
+	{
+		errToken = "INVALID_SEGMENT_INDEX_LEADING_ZERO";
+		return false;
+	}
+
+	if (!allDigits)
+	{
+		errToken = "INVALID_SEGMENT_INDEX_NON_DIGIT";
+		return false;
+	}
+
+	uint64 val = 0;
+	auto [ptr, ec] = std::from_chars(valStr.data(), valStr.data() + valStr.size(), val);
+	if (ec != std::errc() || ptr != valStr.data() + valStr.size() || val > 4294967295ULL)
+	{
+		errToken = "INVALID_SEGMENT_INDEX_OVERFLOW";
+		return false;
+	}
+
+	outVal = static_cast<uint32>(val);
+	return true;
+}
+
+bool NzbFile::ValidateSegmentIdentities()
+{
+	bool anySegmentHasRawIndex = false;
+	for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
+	{
+		for (const auto& article : *fileInfo->GetArticles())
 		{
-			hasValidIdentity = false;
+			if (article && article->HasRawSegmentIndex())
+			{
+				anySegmentHasRawIndex = true;
+				break;
+			}
+		}
+		if (anySegmentHasRawIndex)
+		{
 			break;
 		}
 	}
 
-	if (hasValidIdentity)
-	{
-		// Check that the set of ordinals is a strict permutation of 1..totalFilesCount
-		std::vector<bool> seenOrdinals(totalFilesCount + 1, false);
-		for (FileInfo* fileInfo : fileList)
-		{
-			uint32 ord = fileInfo->GetFileOrdinal().value();
-			if (ord < 1 || ord > totalFilesCount || seenOrdinals[ord])
-			{
-				hasValidIdentity = false;
-				break;
-			}
-			seenOrdinals[ord] = true;
-		}
-	}
+	bool isEncrypted = m_yencEncryptedMeta || (!m_password.empty() && anySegmentHasRawIndex);
 
-	if (hasValidIdentity)
+	if (isEncrypted)
 	{
-		// Check each file's declared parts: must have articles, no missed articles,
-		// and parts must be strictly 1..N contiguous without gaps or duplicates.
-		for (FileInfo* fileInfo : fileList)
+		m_nzbInfo->SetYEncEncrypted(true);
+		std::unordered_set<uint32> seenIndices;
+		std::unordered_map<std::string, uint32> seenMids;
+
+		for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
 		{
-			ArticleList* articles = fileInfo->GetArticles();
-			if (articles->empty() || fileInfo->GetMissedArticles() > 0 || fileInfo->GetDuplicateArticles())
+			for (const auto& article : *fileInfo->GetArticles())
 			{
-				hasValidIdentity = false;
-				break;
-			}
-			for (size_t i = 0; i < articles->size(); ++i)
-			{
-				ArticleInfo* article = (*articles)[i].get();
-				if (!article || article->GetPartNumber() != static_cast<int>(i + 1))
+				if (!article)
 				{
-					hasValidIdentity = false;
-					break;
+					continue;
 				}
-			}
-			if (!hasValidIdentity)
-			{
-				break;
-			}
-		}
-	}
 
-	std::vector<uint32> fileBases(totalFilesCount + 1, 0);
-	if (hasValidIdentity)
-	{
-		// Index files by ordinal
-		std::vector<FileInfo*> filesByOrd(totalFilesCount + 1, nullptr);
-		for (FileInfo* fileInfo : fileList)
-		{
-			filesByOrd[fileInfo->GetFileOrdinal().value()] = fileInfo;
-		}
+				if (!article->HasRawSegmentIndex())
+				{
+					m_nzbInfo->AddMessage(Message::mkError, "Error parsing nzb-file: MISSING_SEGMENT_INDEX");
+					return false;
+				}
 
-		uint32 prefixSum = 0;
-		for (uint32 ord = 1; ord <= totalFilesCount; ++ord)
-		{
-			FileInfo* fileInfo = filesByOrd[ord];
-			uint32 partCount = static_cast<uint32>(fileInfo->GetArticles()->size());
-			// base is 1-based start segment index: prefixSum + 1
-			if (prefixSum > std::numeric_limits<uint32>::max() - 1)
-			{
-				hasValidIdentity = false;
-				break;
-			}
-			uint32 base = prefixSum + 1;
-			// Check if base + partCount - 1 overflows uint32
-			if (partCount == 0 || base > std::numeric_limits<uint32>::max() - (partCount - 1))
-			{
-				hasValidIdentity = false;
-				break;
-			}
-			fileBases[ord] = base;
-			prefixSum += partCount;
-		}
-	}
+				uint32 segIndex = 0;
+				std::string errToken;
+				if (!ParseSegmentIndex(article->GetRawSegmentIndex(), segIndex, errToken))
+				{
+					m_nzbInfo->AddMessage(Message::mkError, BString<1024>("Error parsing nzb-file: %s", errToken.c_str()));
+					return false;
+				}
 
-	if (hasValidIdentity)
-	{
-		for (FileInfo* fileInfo : fileList)
-		{
-			uint32 ord = fileInfo->GetFileOrdinal().value();
-			uint32 base = fileBases[ord];
-			fileInfo->SetSegmentIndexBase(base);
+				std::string mid = article->GetMessageId() ? article->GetMessageId() : "";
+				if (mid.size() >= 2 && mid.front() == '<' && mid.back() == '>')
+				{
+					mid = mid.substr(1, mid.size() - 2);
+				}
 
-			ArticleList* articles = fileInfo->GetArticles();
-			for (size_t i = 0; i < articles->size(); ++i)
-			{
-				ArticleInfo* article = (*articles)[i].get();
-				uint32 segIndex = base + static_cast<uint32>(article->GetPartNumber()) - 1;
+				auto midIt = seenMids.find(mid);
+				if (midIt != seenMids.end())
+				{
+					if (midIt->second != segIndex)
+					{
+						m_nzbInfo->AddMessage(Message::mkError, "Error parsing nzb-file: CONFLICTING_MESSAGE_ID_INDEX");
+						return false;
+					}
+				}
+				else
+				{
+					if (seenIndices.find(segIndex) != seenIndices.end())
+					{
+						m_nzbInfo->AddMessage(Message::mkError, "Error parsing nzb-file: DUPLICATE_SEGMENT_INDEX");
+						return false;
+					}
+					seenIndices.insert(segIndex);
+					seenMids[mid] = segIndex;
+				}
+
 				article->SetSegmentIndex(segIndex);
 			}
 		}
 	}
 	else
 	{
-		// Unset all identity fields across the release
-		for (FileInfo* fileInfo : fileList)
+		m_nzbInfo->SetYEncEncrypted(false);
+		for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
 		{
-			fileInfo->SetFileOrdinal(std::nullopt);
-			fileInfo->SetTotalFiles(std::nullopt);
-			fileInfo->SetSegmentIndexBase(std::nullopt);
-
-			ArticleList* articles = fileInfo->GetArticles();
-			for (auto& article : *articles)
+			for (const auto& article : *fileInfo->GetArticles())
 			{
 				if (article)
 				{
@@ -462,11 +476,16 @@ void NzbFile::CalculateSegmentIndices()
 			}
 		}
 	}
+
+	return true;
 }
 
-void NzbFile::ProcessFiles()
+bool NzbFile::ProcessFiles()
 {
-	CalculateSegmentIndices();
+	if (!ValidateSegmentIdentities())
+	{
+		return false;
+	}
 
 	BuildFilenames();
 
@@ -531,6 +550,8 @@ void NzbFile::ProcessFiles()
 	{
 		m_nzbInfo->SetMetaName(m_metaName);
 	}
+
+	return true;
 }
 /*
 * Attempt to Read the Password from the Filename encoded in {{ Bracets }}
@@ -576,7 +597,10 @@ bool NzbFile::Parse()
 		return false;
 	}
 
-	ProcessFiles();
+	if (!ProcessFiles())
+	{
+		return false;
+	}
 
 	return true;
 }
@@ -636,6 +660,7 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 
 		int64 lsize = -1;
 		int partNumber = -1;
+		const char* rawSegmentIndex = nullptr;
 
 		for (int i = 0; atts[i]; i += 2)
 		{
@@ -649,6 +674,10 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			{
 				partNumber = atol(attrvalue);
 			}
+			if (!strcmp("segmentIndex", attrname))
+			{
+				rawSegmentIndex = attrvalue;
+			}
 		}
 
 		if (partNumber > 0)
@@ -657,6 +686,10 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			std::unique_ptr<ArticleInfo> article = std::make_unique<ArticleInfo>();
 			article->SetPartNumber(partNumber);
 			article->SetSize(lsize);
+			if (rawSegmentIndex)
+			{
+				article->SetRawSegmentIndex(rawSegmentIndex);
+			}
 			m_article = AddArticle(m_fileInfo.get(), std::move(article));
 		}
 	}
@@ -666,6 +699,7 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 		m_hasCategory = false;
 		m_hasName = false;
 		m_hasTitle = false;
+		m_hasYEncEncrypted = false;
 
 		if (!atts)
 		{
@@ -681,6 +715,7 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 				else if (!strcasecmp("category", atts[i + 1])) m_hasCategory = true;
 				else if (!strcasecmp("name", atts[i + 1])) m_hasName = true;
 				else if (!strcasecmp("title", atts[i + 1])) m_hasTitle = true;
+				else if (!strcasecmp("yenc_encrypted", atts[i + 1])) m_hasYEncEncrypted = true;
 			}
 		}
 	}
@@ -733,6 +768,15 @@ void NzbFile::Parse_EndElement(const char *name)
 	else if (!strcmp("meta", name) && m_hasTitle)
 	{
 		m_metaTitle = m_tagContent;
+	}
+	else if (!strcmp("meta", name) && m_hasYEncEncrypted)
+	{
+		std::string val = *m_tagContent;
+		Util::Trim(val);
+		if (!strcasecmp(val.c_str(), "true") || !strcasecmp(val.c_str(), "yes") || val == "1")
+		{
+			m_yencEncryptedMeta = true;
+		}
 	}
 
 	m_currentElement.clear();

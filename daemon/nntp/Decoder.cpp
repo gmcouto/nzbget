@@ -30,6 +30,21 @@ Decoder::Decoder()
 	Clear();
 }
 
+Decoder::~Decoder() = default;
+
+void Decoder::SetPassword(const char* password)
+{
+	if (!m_decryptor)
+	{
+		m_ownDecryptor = std::make_unique<YEncDecryptor>(password ? password : "");
+		m_decryptor = m_ownDecryptor.get();
+	}
+	else
+	{
+		m_decryptor->SetPassword(password ? password : "");
+	}
+}
+
 void Decoder::Clear()
 {
 	m_articleFilename.clear();
@@ -57,6 +72,9 @@ void Decoder::Clear()
 	memset(m_tag, 0, sizeof(m_tag));
 	m_cipherPayload.clear();
 	m_decryptedPlaintext.clear();
+	m_encryptedWireMode = false;
+	m_wireProcessed = false;
+	m_wireBuffer.clear();
 }
 
 /* At the beginning of article the processing goes line by line to find '=ybegin'-marker.
@@ -71,6 +89,99 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	{
 		ProcessRaw(buffer, len);
 		return len;
+	}
+
+	bool alreadyBuffered = false;
+
+	// Check if candidate for encrypted wire mode
+	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty() && m_segmentIndex > 0)))
+	{
+		m_wireBuffer.append(buffer, len);
+
+		if (!m_encryptedWireMode)
+		{
+			size_t nlPos = m_wireBuffer.find('\n');
+			if (nlPos != std::string::npos)
+			{
+				size_t line1End = nlPos;
+				if (line1End > 0 && m_wireBuffer[line1End - 1] == '\r')
+				{
+					--line1End;
+				}
+				std::string line1 = m_wireBuffer.substr(0, line1End);
+
+				if (line1.rfind("=ybegin ", 0) == 0 || line1.rfind("begin ", 0) == 0)
+				{
+					m_encryptedWireMode = false;
+				}
+				else
+				{
+					std::vector<uint8_t> ptLine1;
+					std::vector<uint8_t> salt1;
+					auto st = m_decryptor->DecryptControlLine(
+						reinterpret_cast<const uint8_t*>(line1.data()),
+						line1.size(),
+						m_segmentIndex,
+						1,
+						true,
+						ptLine1,
+						&salt1
+					);
+					if (st == YEncDecryptor::Status::Ok && ptLine1.size() >= 8 && memcmp(ptLine1.data(), "=ybegin ", 8) == 0)
+					{
+						m_encryptedWireMode = true;
+						m_format = efYenc;
+					}
+					else
+					{
+						m_encryptedWireMode = false;
+					}
+				}
+
+				if (!m_encryptedWireMode)
+				{
+					m_lineBuf.Append(m_wireBuffer.data(), static_cast<int>(m_wireBuffer.size()));
+					m_wireBuffer.clear();
+					alreadyBuffered = true;
+				}
+			}
+			else if (m_wireBuffer.size() > 8192)
+			{
+				// T-08-06: bound line 1 staging to 8KB
+				m_encryptedWireMode = false;
+				m_lineBuf.Append(m_wireBuffer.data(), static_cast<int>(m_wireBuffer.size()));
+				m_wireBuffer.clear();
+				alreadyBuffered = true;
+			}
+		}
+
+		if (m_encryptedWireMode)
+		{
+			bool complete = false;
+			if (m_wireBuffer.find("\r\n.\r\n") != std::string::npos ||
+				m_wireBuffer.find("\n.\n") != std::string::npos ||
+				m_wireBuffer.find("\n.\r\n") != std::string::npos)
+			{
+				complete = true;
+			}
+			else if (m_wireBuffer.size() >= 3 && m_wireBuffer.substr(m_wireBuffer.size() - 3) == ".\r\n")
+			{
+				complete = true;
+			}
+			else if (m_wireBuffer.size() >= 2 && m_wireBuffer.substr(m_wireBuffer.size() - 2) == ".\n")
+			{
+				complete = true;
+			}
+
+			if (complete)
+			{
+				ProcessRestoredBlock(m_wireBuffer);
+				m_wireProcessed = true;
+				m_eof = true;
+			}
+
+			return 0;
+		}
 	}
 
 	int outlen = 0;
@@ -94,7 +205,10 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	}
 	else
 	{
-		m_lineBuf.Append(buffer, len);
+		if (!alreadyBuffered)
+		{
+			m_lineBuf.Append(buffer, len);
+		}
 	}
 
 	char* line = (char*)m_lineBuf;
@@ -353,8 +467,109 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	return bytesWritten;
 }
 
+void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
+{
+	if (!m_decryptor)
+	{
+		m_authFailed = true;
+		return;
+	}
+
+	std::string cleanBlock;
+	std::vector<uint8_t> line1Salt;
+	YEncDecryptor::YEncryptionHeader header;
+	bool ok = m_decryptor->RestoreControlLines(
+		wireBlock.data(), wireBlock.size(), m_segmentIndex, cleanBlock, line1Salt, &header
+	);
+	if (!ok)
+	{
+		m_authFailed = true;
+		m_decryptedPlaintext.clear();
+		return;
+	}
+
+	m_encrypted = true;
+	m_cipher = header.cipher;
+	memcpy(m_salt, header.salt.data(), 16);
+	memcpy(m_tag, header.tag.data(), 16);
+
+	// Reset state for clean yEnc decode
+	m_format = efYenc;
+	m_begin = false;
+	m_part = false;
+	m_body = false;
+	m_end = false;
+	m_crc = false;
+	m_eof = false;
+	m_state = 0;
+	m_expectedCRC = 0;
+	m_crc32.Reset();
+	m_outSize = 0;
+	m_cipherPayload.clear();
+	m_lineBuf.SetLength(0);
+
+	const char* ptr = cleanBlock.data();
+	const char* end = ptr + cleanBlock.size();
+	std::vector<char> decodeOut(cleanBlock.size() + 1024);
+
+	while (ptr < end && !m_eof)
+	{
+		if (m_body)
+		{
+			int rem = static_cast<int>(end - ptr);
+			DecodeYenc((char*)ptr, decodeOut.data(), rem);
+			if (!m_body)
+			{
+				char* line = (char*)m_lineBuf;
+				while (char* nl = strchr(line, '\n'))
+				{
+					int llen = (int)(nl - line + 1);
+					if (line[0] == '.' && (line[1] == '\r' || line[1] == '\n'))
+					{
+						m_eof = true;
+						break;
+					}
+					ProcessYenc(line, llen);
+					line = nl + 1;
+				}
+				ptr = end;
+			}
+			else
+			{
+				ptr = end;
+			}
+		}
+		else
+		{
+			const char* nl = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+			if (!nl)
+			{
+				break;
+			}
+			int llen = static_cast<int>(nl - ptr + 1);
+			std::string currentLine(ptr, llen);
+
+			if (currentLine[0] == '.' && (currentLine[1] == '\r' || currentLine[1] == '\n'))
+			{
+				m_eof = true;
+				break;
+			}
+
+			ProcessYenc(currentLine.data(), llen);
+			ptr = nl + 1;
+		}
+	}
+}
+
 Decoder::EStatus Decoder::Check()
 {
+	if (m_encryptedWireMode && !m_wireProcessed)
+	{
+		m_eof = true;
+		ProcessRestoredBlock(m_wireBuffer);
+		m_wireProcessed = true;
+	}
+
 	if (m_authFailed)
 	{
 		return dsAuthFailed;
@@ -401,8 +616,15 @@ Decoder::EStatus Decoder::CheckYenc()
 		return dsCrcError;
 	}
 
-	if (m_encrypted && m_decryptor)
+	if (m_encrypted)
 	{
+		if (m_segmentIndex == 0 || !m_decryptor)
+		{
+			m_authFailed = true;
+			m_decryptedPlaintext.clear();
+			return dsAuthFailed;
+		}
+
 		m_decryptedPlaintext.clear();
 		YEncDecryptor::Status st = m_decryptor->AuthenticateAndDecrypt(
 			m_cipherPayload.data(), m_cipherPayload.size(),

@@ -360,18 +360,29 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	m_decoder.SetCrcCheck(g_Options->GetCrcCheck());
 	m_decoder.SetRawMode(g_Options->GetRawArticle());
 
-	if (m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->HasPassword())
+	bool isEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || m_articleInfo->HasSegmentIndex());
+	if (isEncrypted)
 	{
+		if (!m_articleInfo->HasSegmentIndex() || m_articleInfo->GetSegmentIndex().value() == 0)
+		{
+			warn("Missing explicit segmentIndex for encrypted article %s", *m_infoName);
+			status = adFailed;
+			return status;
+		}
+
 		const char* pwd = m_fileInfo->GetNzbInfo()->GetPassword();
 		if (!m_decryptor || m_decryptor->GetPassword() != pwd)
 		{
 			m_decryptor = std::make_unique<YEncDecryptor>(pwd);
 		}
 		m_decoder.SetDecryptor(m_decryptor.get());
-		if (m_articleInfo->HasSegmentIndex())
-		{
-			m_decoder.SetSegmentIndex(m_articleInfo->GetSegmentIndex().value());
-		}
+		m_decoder.SetSegmentIndex(m_articleInfo->GetSegmentIndex().value());
+	}
+	else
+	{
+		m_decoder.SetDecryptor(nullptr);
+		m_decoder.SetSegmentIndex(0);
 	}
 
 	status = adRunning;
@@ -550,11 +561,38 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 					m_decoder.GetCalculatedCrc() : m_decoder.GetExpectedCrc());
 			}
 
+			bool isEncrypted = m_decoder.IsEncrypted() && !m_decoder.GetDecryptedData().empty();
+			if (isEncrypted)
+			{
+				int64 articleFileSize = m_decoder.GetSize();
+				int64 articleOffset = m_decoder.GetBeginPos() > 0 ? m_decoder.GetBeginPos() - 1 : 0;
+				int articleSize = static_cast<int>(m_decoder.GetDecryptedData().size());
+
+				if (!m_articleWriter.Start(m_decoder.GetFormat(), m_decoder.GetArticleFilename(),
+					articleFileSize, articleOffset, articleSize))
+				{
+					return adFatalError;
+				}
+				m_writingStarted = true;
+
+				if (!m_articleWriter.CommitAuthenticatedData(
+					m_decoder.GetDecryptedData().data(),
+					m_decoder.GetDecryptedData().size(),
+					articleOffset))
+				{
+					return adFatalError;
+				}
+			}
+
 			return adFinished;
 		}
 		else if (status == Decoder::dsAuthFailed)
 		{
-			detail("Decoding %s failed: authentication failure", *m_infoName);
+			if (m_writingStarted)
+			{
+				m_articleWriter.DiscardStagedData();
+			}
+			warn("Article %s failed authentication, retrying...", *m_infoName);
 			return adFailed;
 		}
 		else if (status == Decoder::dsCrcError)

@@ -413,9 +413,6 @@ BOOST_AUTO_TEST_CASE(DiskStateMalformedAndCorruptTest)
 	// 11. Article with segmentIndex 0 when file has identity
 	checkFails(createTemplate("2,5,10", "1,1000,0", "2,1000,11"));
 
-	// 12. Article with segmentIndex > 0 when file has NO identity (0,0,0)
-	checkFails(createTemplate("0,0,0", "1,1000,10", "2,1000,0"));
-
 	// 13. Article with declared part number 0
 	checkFails(createTemplate("2,5,10", "0,1000,10", "2,1000,11"));
 
@@ -441,6 +438,71 @@ BOOST_AUTO_TEST_CASE(DiskStateMalformedAndCorruptTest)
 		"bad signature file version 8\n"
 		"Test Subject\n";
 	checkFails(badSig);
+}
+
+BOOST_AUTO_TEST_CASE(DiskStateObfuscatedSegmentIdentityTest)
+{
+	ScopedQueueDir queueDir("obfuscated");
+
+	FileInfo origFile(501);
+	origFile.SetSubject("7a8b9c0d1e2f3a4b");
+	origFile.SetFilename("obfuscated.bin");
+	origFile.SetOrigname("obfuscated.bin");
+	// No file ordinal, totalFiles, or base (obfuscated release)
+	origFile.SetFileOrdinal(std::nullopt);
+	origFile.SetTotalFiles(std::nullopt);
+	origFile.SetSegmentIndexBase(std::nullopt);
+
+	std::unique_ptr<ArticleInfo> art = std::make_unique<ArticleInfo>();
+	art->SetPartNumber(1);
+	art->SetSize(1000);
+	art->SetMessageId("art1@obfuscated.com");
+	art->SetSegmentIndex(42);
+	origFile.GetArticles()->push_back(std::move(art));
+
+	BOOST_REQUIRE(g_DiskState->SaveFile(&origFile));
+
+	// Reload and verify article segmentIndex 42 survives despite 0,0,0 file line
+	FileInfo loadedFile(501);
+	BOOST_REQUIRE(g_DiskState->LoadFile(&loadedFile, true, true));
+
+	BOOST_CHECK(!loadedFile.HasFileOrdinal());
+	BOOST_CHECK(!loadedFile.HasTotalFiles());
+	BOOST_CHECK(!loadedFile.HasSegmentIndexBase());
+	BOOST_REQUIRE_EQUAL(loadedFile.GetArticles()->size(), 1U);
+	BOOST_REQUIRE(loadedFile.GetArticles()->front()->HasSegmentIndex());
+	BOOST_CHECK_EQUAL(loadedFile.GetArticles()->front()->GetSegmentIndex().value(), 42U);
+}
+
+BOOST_AUTO_TEST_CASE(DiskStateUnencryptedPersistenceTest)
+{
+	ScopedQueueDir queueDir("unencrypted");
+
+	FileInfo origFile(601);
+	origFile.SetSubject("unencrypted.bin");
+	origFile.SetFilename("unencrypted.bin");
+	origFile.SetOrigname("unencrypted.bin");
+	origFile.SetFileOrdinal(std::nullopt);
+	origFile.SetTotalFiles(std::nullopt);
+	origFile.SetSegmentIndexBase(std::nullopt);
+
+	std::unique_ptr<ArticleInfo> art = std::make_unique<ArticleInfo>();
+	art->SetPartNumber(1);
+	art->SetSize(1000);
+	art->SetMessageId("art1@unencrypted.com");
+	art->SetSegmentIndex(std::nullopt);
+	origFile.GetArticles()->push_back(std::move(art));
+
+	BOOST_REQUIRE(g_DiskState->SaveFile(&origFile));
+
+	FileInfo loadedFile(601);
+	BOOST_REQUIRE(g_DiskState->LoadFile(&loadedFile, true, true));
+
+	BOOST_CHECK(!loadedFile.HasFileOrdinal());
+	BOOST_CHECK(!loadedFile.HasTotalFiles());
+	BOOST_CHECK(!loadedFile.HasSegmentIndexBase());
+	BOOST_REQUIRE_EQUAL(loadedFile.GetArticles()->size(), 1U);
+	BOOST_CHECK(!loadedFile.GetArticles()->front()->HasSegmentIndex());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

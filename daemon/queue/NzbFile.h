@@ -39,6 +39,7 @@ public:
 	const std::string& GetMetaTitle() const { return m_metaTitle; }
 
 	static bool ParseFileCounter(std::string_view subject, uint32& fileOrdinal, uint32& totalFiles);
+	static bool ParseSegmentIndex(std::string_view valStr, uint32& outVal, std::string& errToken);
 
 	void LogDebugInfo();
 
@@ -54,8 +55,8 @@ private:
 	void AddFileInfo(std::unique_ptr<FileInfo> fileInfo);
 	void ParseSubject(FileInfo* fileInfo, bool TryQuotes);
 	void BuildFilenames();
-	void ProcessFiles();
-	void CalculateSegmentIndices();
+	bool ProcessFiles();
+	bool ValidateSegmentIdentities();
 	void CalcHashes();
 	bool HasDuplicateFilenames();
 	void ReadPasswordFromFilename();
@@ -68,6 +69,8 @@ private:
 	bool m_hasCategory = false;
 	bool m_hasName = false;
 	bool m_hasTitle = false;
+	bool m_hasYEncEncrypted = false;
+	bool m_yencEncryptedMeta = false;
 	std::string m_currentElement;
 
 	static void SAX_StartElement(NzbFile* file, const char *name, const char **atts);

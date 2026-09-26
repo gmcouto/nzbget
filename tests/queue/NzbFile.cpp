@@ -334,328 +334,284 @@ BOOST_AUTO_TEST_CASE(BuildFinalDirNameUniqueIdTest)
 	BOOST_CHECK_NE(finalDir1, finalDir2);
 }
 
-BOOST_AUTO_TEST_CASE(NzbFileSegmentIdentityTest)
+BOOST_AUTO_TEST_CASE(ParseSegmentIndexTest)
 {
-	const fs::path tempNzb = fs::temp_directory_path() / "nzbget_test_segment_identity_reversed.nzb";
-	const std::string xml =
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<!DOCTYPE nzb PUBLIC \"-//newzBin//DTD NZB 1.0//EN\" \"http://www.newzbin.com/DTD/nzb/nzb-1.0.dtd\">\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg2_1@test</segment></segments>\n"
-		"</file>\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file1.bin&quot; yEnc (1/2)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments>\n"
-		"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
-		"<segment bytes=\"100\" number=\"2\">msg1_2@test</segment>\n"
-		"</segments>\n"
-		"</file>\n"
-		"</nzb>\n";
+	uint32 outVal = 0;
+	std::string errToken;
 
-	WriteRawNzb(tempNzb, xml);
+	// Valid values
+	BOOST_CHECK(NzbFile::ParseSegmentIndex("1", outVal, errToken));
+	BOOST_CHECK_EQUAL(outVal, 1U);
 
-	auto verifyParsed = [](const fs::path& path)
-	{
-		NzbFile nzbFile(path.string().c_str(), "");
-		BOOST_REQUIRE(nzbFile.Parse());
+	BOOST_CHECK(NzbFile::ParseSegmentIndex("4294967295", outVal, errToken));
+	BOOST_CHECK_EQUAL(outVal, 4294967295U);
 
-		auto nzbInfo = nzbFile.DetachNzbInfo();
-		BOOST_REQUIRE(nzbInfo);
-		FileList* fileList = nzbInfo->GetFileList();
-		BOOST_REQUIRE_EQUAL(fileList->size(), 2U);
+	BOOST_CHECK(NzbFile::ParseSegmentIndex("42", outVal, errToken));
+	BOOST_CHECK_EQUAL(outVal, 42U);
 
-		FileInfo* file1 = nullptr;
-		FileInfo* file2 = nullptr;
-		for (FileInfo* fi : fileList)
-		{
-			if (fi->HasFileOrdinal() && fi->GetFileOrdinal().value() == 1U)
-			{
-				file1 = fi;
-			}
-			else if (fi->HasFileOrdinal() && fi->GetFileOrdinal().value() == 2U)
-			{
-				file2 = fi;
-			}
-		}
+	BOOST_CHECK(NzbFile::ParseSegmentIndex("12345678", outVal, errToken));
+	BOOST_CHECK_EQUAL(outVal, 12345678U);
 
-		BOOST_REQUIRE(file1 != nullptr);
-		BOOST_REQUIRE(file2 != nullptr);
+	// Empty
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_EMPTY");
 
-		BOOST_CHECK_EQUAL(file1->GetTotalFiles().value(), 2U);
-		BOOST_CHECK_EQUAL(file1->GetSegmentIndexBase().value(), 1U);
-		BOOST_REQUIRE_EQUAL(file1->GetArticles()->size(), 2U);
-		BOOST_REQUIRE(file1->GetArticles()->at(0)->HasSegmentIndex());
-		BOOST_CHECK_EQUAL(file1->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
-		BOOST_REQUIRE(file1->GetArticles()->at(1)->HasSegmentIndex());
-		BOOST_CHECK_EQUAL(file1->GetArticles()->at(1)->GetSegmentIndex().value(), 2U);
+	// Zero
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("0", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_ZERO");
 
-		BOOST_CHECK_EQUAL(file2->GetTotalFiles().value(), 2U);
-		BOOST_CHECK_EQUAL(file2->GetSegmentIndexBase().value(), 3U);
-		BOOST_REQUIRE_EQUAL(file2->GetArticles()->size(), 1U);
-		BOOST_REQUIRE(file2->GetArticles()->at(0)->HasSegmentIndex());
-		BOOST_CHECK_EQUAL(file2->GetArticles()->at(0)->GetSegmentIndex().value(), 3U);
-	};
+	// Sign
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("+1", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_SIGN");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("-1", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_SIGN");
 
-	// 1. Reversed XML order produces canonical continuous assignment
-	verifyParsed(tempNzb);
+	// Whitespace
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex(" 1", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1 ", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1 2", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1\t", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1\n", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1\r", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
 
-	// 2. Repeated parse produces identical values
-	verifyParsed(tempNzb);
+	// Leading zero
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("01", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_LEADING_ZERO");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("007", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_LEADING_ZERO");
 
-	fs::remove(tempNzb);
+	// Non-digit
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("0x01", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1.0", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("one", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1a", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
+
+	// Overflow
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("4294967296", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_OVERFLOW");
+	BOOST_CHECK(!NzbFile::ParseSegmentIndex("18446744073709551615", outVal, errToken));
+	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_OVERFLOW");
 }
 
-BOOST_AUTO_TEST_CASE(NzbFileSegmentIdentityMalformedAndOrdinaryTest)
+BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 {
-	auto parseAndCheckAllUnset = [](std::string_view xml, const std::string& filename)
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
 	{
 		const fs::path tempNzb = fs::temp_directory_path() / filename;
 		WriteRawNzb(tempNzb, xml);
 
 		NzbFile nzbFile(tempNzb.string().c_str(), "");
-		BOOST_REQUIRE(nzbFile.Parse());
-
-		auto nzbInfo = nzbFile.DetachNzbInfo();
-		BOOST_REQUIRE(nzbInfo);
-		FileList* fileList = nzbInfo->GetFileList();
-		BOOST_REQUIRE(!fileList->empty());
-
-		for (FileInfo* fi : fileList)
-		{
-			BOOST_CHECK(!fi->HasFileOrdinal());
-			BOOST_CHECK(!fi->HasTotalFiles());
-			BOOST_CHECK(!fi->HasSegmentIndexBase());
-			for (auto& art : *fi->GetArticles())
-			{
-				if (art)
-				{
-					BOOST_CHECK(!art->HasSegmentIndex());
-				}
-			}
-		}
-
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
 		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
 	};
 
-	// 1. Ordinary unnumbered NZB
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"&quot;ordinary.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_ordinary.nzb"
-	);
-
-	// 2. Bracketed text that is not a counter
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[GROUP] - &quot;file.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_bracket_non_counter.nzb"
-	);
-
-	// 3. Zero file ordinal [0/2]
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[0/2] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-		"</file>\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_zero_ordinal.nzb"
-	);
-
-	// 4. Overflow uint32 in counter [4294967296/2]
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[4294967296/2] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-		"</file>\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_overflow_ordinal.nzb"
-	);
-
-	// 5. Inconsistent declared totals: [1/3] and [2/2]
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/3] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-		"</file>\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_inconsistent_total.nzb"
-	);
-
-	// 6. Incomplete ordinal set (missing file 2: [1/3] and [3/3])
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/3] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-		"</file>\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[3/3] - &quot;file3.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg3@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_incomplete_ordinal.nzb"
-	);
-
-	// 7. Duplicate file ordinals: [1/2] and [1/2]
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-		"</file>\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\">msg2@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_duplicate_ordinal.nzb"
-	);
-
-	// 8. Declared part gap: parts 1 and 3 present, part 2 missing
-	// Part 3 MUST NOT be compacted into position 2. Declared part must remain 3.
+	// 1. Valid sequential encrypted release
 	{
-		const fs::path tempNzb = fs::temp_directory_path() / "nzbget_test_part_gap.nzb";
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/1] - &quot;file1.bin&quot; yEnc (1/3)\">\n"
-			"<groups><group>alt.binaries.test</group></groups>\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"[1/1] - &quot;f.bin&quot; yEnc (1/2)\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
-			"<segment bytes=\"100\" number=\"3\">msg1_3@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"2\">msg2@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
-		WriteRawNzb(tempNzb, xml);
-
-		NzbFile nzbFile(tempNzb.string().c_str(), "");
-		BOOST_REQUIRE(nzbFile.Parse());
-
-		auto nzbInfo = nzbFile.DetachNzbInfo();
-		BOOST_REQUIRE(nzbInfo);
-		FileList* fileList = nzbInfo->GetFileList();
-		BOOST_REQUIRE_EQUAL(fileList->size(), 1U);
-
-		FileInfo* fi = fileList->front().get();
-		BOOST_CHECK(!fi->HasFileOrdinal());
-		BOOST_CHECK(!fi->HasTotalFiles());
-		BOOST_CHECK(!fi->HasSegmentIndexBase());
-		BOOST_CHECK_EQUAL(fi->GetMissedArticles(), 1);
-
-		ArticleList* articles = fi->GetArticles();
+		auto [ok, info] = parseXml(xml, "valid_seq.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		auto articles = info->GetFileList()->front()->GetArticles();
 		BOOST_REQUIRE_EQUAL(articles->size(), 2U);
-		BOOST_CHECK_EQUAL((*articles)[0]->GetPartNumber(), 1);
-		BOOST_CHECK(!(*articles)[0]->HasSegmentIndex());
-		// Part 3 retains declared part 3, never compacted to 2
-		BOOST_CHECK_EQUAL((*articles)[1]->GetPartNumber(), 3);
-		BOOST_CHECK(!(*articles)[1]->HasSegmentIndex());
-
-		fs::remove(tempNzb);
+		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 1U);
+		BOOST_CHECK_EQUAL((*articles)[1]->GetSegmentIndex().value(), 2U);
 	}
 
-	// 9. Duplicate declared parts: segment number 1 declared twice in one file
-	parseAndCheckAllUnset(
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/1] - &quot;file1.bin&quot; yEnc (1/1)\">\n"
-		"<groups><group>alt.binaries.test</group></groups>\n"
-		"<segments>\n"
-		"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
-		"<segment bytes=\"100\" number=\"1\">msg1_1_dupe@test</segment>\n"
-		"</segments>\n"
-		"</file>\n"
-		"</nzb>\n",
-		"nzbget_test_duplicate_part.nzb"
-	);
-
-	// 10. Scheduling/queue order change does not alter already attached fields
+	// 2. Arbitrary non-numbered subjects
 	{
-		const fs::path tempNzb = fs::temp_directory_path() / "nzbget_test_queue_reorder.nzb";
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[1/2] - &quot;file1.bin&quot; yEnc (1/2)\">\n"
-			"<groups><group>alt.binaries.test</group></groups>\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"&quot;random_movie.mkv&quot;\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\">msg1_1@test</segment>\n"
-			"<segment bytes=\"100\" number=\"2\">msg1_2@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"10\">msg1@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
-			"<file poster=\"poster@test.com\" date=\"1335508618\" subject=\"[2/2] - &quot;file2.bin&quot; yEnc (1/1)\">\n"
-			"<groups><group>alt.binaries.test</group></groups>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"&quot;random_movie.par2&quot;\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\">msg2_1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"20\">msg2@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
-		WriteRawNzb(tempNzb, xml);
+		auto [ok, info] = parseXml(xml, "arbitrary_sub.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		BOOST_CHECK_EQUAL(info->GetFileList()->at(0)->GetArticles()->at(0)->GetSegmentIndex().value(), 10U);
+		BOOST_CHECK_EQUAL(info->GetFileList()->at(1)->GetArticles()->at(0)->GetSegmentIndex().value(), 20U);
+	}
 
-		NzbFile nzbFile(tempNzb.string().c_str(), "");
-		BOOST_REQUIRE(nzbFile.Parse());
+	// 3. Obfuscated hexadecimal subjects
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"7a8b9c0d1e2f3a4b\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"2\">msg2@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "obfuscated_sub.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		auto articles = info->GetFileList()->front()->GetArticles();
+		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 1U);
+		BOOST_CHECK_EQUAL((*articles)[1]->GetSegmentIndex().value(), 2U);
+	}
 
-		auto nzbInfo = nzbFile.DetachNzbInfo();
-		BOOST_REQUIRE(nzbInfo);
-		FileList* fileList = nzbInfo->GetFileList();
-		BOOST_REQUIRE_EQUAL(fileList->size(), 2U);
+	// 4. Reordered files and segments
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"file2.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"2\">msg2@test</segment></segments>\n"
+			"</file>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"file1.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "reordered.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		BOOST_CHECK_EQUAL(info->GetFileList()->at(0)->GetArticles()->at(0)->GetSegmentIndex().value(), 2U);
+		BOOST_CHECK_EQUAL(info->GetFileList()->at(1)->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
+	}
 
-		FileInfo* f1 = fileList->at(0).get();
-		FileInfo* f2 = fileList->at(1).get();
+	// 5. Sparse subsets / non-contiguous indices
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"sparse.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"5\">msg5@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"100\">msg100@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "sparse.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		auto articles = info->GetFileList()->front()->GetArticles();
+		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 5U);
+		BOOST_CHECK_EQUAL((*articles)[1]->GetSegmentIndex().value(), 100U);
+	}
 
-		// Record values before simulated reorder
-		BOOST_CHECK_EQUAL(f1->GetFileOrdinal().value(), 1U);
-		BOOST_CHECK_EQUAL(f1->GetSegmentIndexBase().value(), 1U);
-		BOOST_CHECK_EQUAL(f1->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
-		BOOST_CHECK_EQUAL(f1->GetArticles()->at(1)->GetSegmentIndex().value(), 2U);
+	// 6. Missing segmentIndex on encrypted release fails closed
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"yenc_encrypted\">true</meta><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"missing.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\">msg2@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "missing_idx.nzb");
+		BOOST_CHECK(!ok);
+	}
 
-		BOOST_CHECK_EQUAL(f2->GetFileOrdinal().value(), 2U);
-		BOOST_CHECK_EQUAL(f2->GetSegmentIndexBase().value(), 3U);
-		BOOST_CHECK_EQUAL(f2->GetArticles()->at(0)->GetSegmentIndex().value(), 3U);
+	// 7. Duplicate segmentIndex fails closed
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"duplicate.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"1\">msg2@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "dupe_idx.nzb");
+		BOOST_CHECK(!ok);
+	}
 
-		// Perturb operational order (simulate queue priority or file reordering)
-		std::vector<FileInfo*> reorderedQueue{ f2, f1 };
-		BOOST_CHECK_EQUAL(reorderedQueue[0]->GetFileOrdinal().value(), 2U);
-		BOOST_CHECK_EQUAL(reorderedQueue[0]->GetSegmentIndexBase().value(), 3U);
-		BOOST_CHECK_EQUAL(reorderedQueue[0]->GetArticles()->at(0)->GetSegmentIndex().value(), 3U);
+	// 8. Conflicting Message-ID index mapping fails closed
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"conflict1.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">shared_mid@test</segment></segments>\n"
+			"</file>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"conflict2.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"2\">shared_mid@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "conflict_mid.nzb");
+		BOOST_CHECK(!ok);
+	}
 
-		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetFileOrdinal().value(), 1U);
-		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetSegmentIndexBase().value(), 1U);
-		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
-		BOOST_CHECK_EQUAL(reorderedQueue[1]->GetArticles()->at(1)->GetSegmentIndex().value(), 2U);
-
-		fs::remove(tempNzb);
+	// 9. Unencrypted compatibility
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<file poster=\"p\" date=\"100\" subject=\"unencrypted.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\">msg2@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "unencrypted.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+		auto articles = info->GetFileList()->front()->GetArticles();
+		BOOST_CHECK(!(*articles)[0]->HasSegmentIndex());
+		BOOST_CHECK(!(*articles)[1]->HasSegmentIndex());
 	}
 }
-
 BOOST_AUTO_TEST_SUITE_END()

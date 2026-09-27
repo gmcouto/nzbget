@@ -99,6 +99,7 @@ private:
 	std::unique_ptr<YEncDecryptor> m_decryptor;
 	ServerStatList m_serverStats;
 	bool m_writingStarted;
+	bool m_authFailed = false;
 	int m_downloadedSize = 0;
 	std::unique_ptr<ArticleContentAnalyzer> m_contentAnalyzer;
 

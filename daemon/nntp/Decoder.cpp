@@ -47,6 +47,7 @@ void Decoder::SetPassword(const char* password)
 
 void Decoder::Clear()
 {
+	m_format = efUnknown;
 	m_articleFilename.clear();
 	m_body = false;
 	m_begin = false;
@@ -493,8 +494,10 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 	memcpy(m_salt, header.salt.data(), 16);
 	memcpy(m_tag, header.tag.data(), 16);
 
-	// Reset state for clean yEnc decode
-	m_format = efYenc;
+	// Reset state, then run the restored article through the ordinary decoder.
+	// This keeps control-line restoration separate without duplicating the
+	// line/body transition logic (especially the buffered =yend transition).
+	m_format = efUnknown;
 	m_begin = false;
 	m_part = false;
 	m_body = false;
@@ -507,58 +510,9 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 	m_outSize = 0;
 	m_cipherPayload.clear();
 	m_lineBuf.SetLength(0);
+	m_wireProcessed = true;
 
-	const char* ptr = cleanBlock.data();
-	const char* end = ptr + cleanBlock.size();
-	std::vector<char> decodeOut(cleanBlock.size() + 1024);
-
-	while (ptr < end && !m_eof)
-	{
-		if (m_body)
-		{
-			int rem = static_cast<int>(end - ptr);
-			DecodeYenc((char*)ptr, decodeOut.data(), rem);
-			if (!m_body)
-			{
-				char* line = (char*)m_lineBuf;
-				while (char* nl = strchr(line, '\n'))
-				{
-					int llen = (int)(nl - line + 1);
-					if (line[0] == '.' && (line[1] == '\r' || line[1] == '\n'))
-					{
-						m_eof = true;
-						break;
-					}
-					ProcessYenc(line, llen);
-					line = nl + 1;
-				}
-				ptr = end;
-			}
-			else
-			{
-				ptr = end;
-			}
-		}
-		else
-		{
-			const char* nl = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
-			if (!nl)
-			{
-				break;
-			}
-			int llen = static_cast<int>(nl - ptr + 1);
-			std::string currentLine(ptr, llen);
-
-			if (currentLine[0] == '.' && (currentLine[1] == '\r' || currentLine[1] == '\n'))
-			{
-				m_eof = true;
-				break;
-			}
-
-			ProcessYenc(currentLine.data(), llen);
-			ptr = nl + 1;
-		}
-	}
+	DecodeBuffer(cleanBlock.data(), static_cast<int>(cleanBlock.size()));
 }
 
 Decoder::EStatus Decoder::Check()

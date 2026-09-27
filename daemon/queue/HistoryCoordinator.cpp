@@ -590,10 +590,10 @@ void HistoryCoordinator::HistoryRetry(DownloadQueue* downloadQueue, HistoryList:
 
 	NzbInfo* nzbInfo = historyInfo->GetNzbInfo();
 
-	if (!FileSystem::DirectoryExists(nzbInfo->GetDestDir()))
+	if (!resetFailed && !FileSystem::DirectoryExists(nzbInfo->GetDestDir()))
 	{
 		error("Could not %s %s: destination directory %s doesn't exist",
-			(resetFailed ? "retry failed articles for" : reprocess ? "post-process again" : "download remaining files for"),
+			(reprocess ? "post-process again" : "download remaining files for"),
 			historyInfo->GetName(), nzbInfo->GetDestDir());
 		return;
 	}
@@ -658,6 +658,12 @@ void HistoryCoordinator::HistoryRetry(DownloadQueue* downloadQueue, HistoryList:
 			}
 		}
 		++it;
+	}
+
+	if (resetFailed && nzbInfo->GetFileList()->empty())
+	{
+		HistoryRedownload(downloadQueue, itHistory, historyInfo, false);
+		return;
 	}
 
 	nzbInfo->UpdateCurrentStats();

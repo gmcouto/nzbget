@@ -190,7 +190,7 @@ void ArticleDownloader::Run()
 
 		if (connected && status == adFailed)
 		{
-			remainedRetries--;
+			remainedRetries = m_authFailed ? 0 : remainedRetries - 1;
 		}
 
 		bool optionalBlocked = false;
@@ -385,6 +385,7 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 		m_decoder.SetSegmentIndex(0);
 	}
 
+	m_authFailed = false;
 	status = adRunning;
 	CharBuffer lineBuf(g_Options->GetArticleReadChunkSize());
 
@@ -588,12 +589,13 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 		}
 		else if (status == Decoder::dsAuthFailed)
 		{
+			m_authFailed = true;
 			if (m_writingStarted)
 			{
 				m_articleWriter.DiscardStagedData();
 			}
 			warn("Article %s failed authentication, retrying...", *m_infoName);
-			return adFailed;
+			return adNotFound;
 		}
 		else if (status == Decoder::dsCrcError)
 		{

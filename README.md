@@ -61,6 +61,14 @@ More information available at https://nzbget.com
  - [Performance tips](docs/PERFORMANCE.md)
  - [API reference](docs/api/API.md)
 
+## yEnc Header and Body Decryption
+
+NZBGet supports downloading releases protected by yEnc body and control-line encryption (XChaCha20-Poly1305 and Radix 253 FF1).
+
+- **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and `<meta type="password">` decrypt automatically without manual intervention.
+- **Manual Password Entry**: Passwords can be supplied via the web interface (Downloads -> edit item -> Password) or via the command line when appending an NZB (`nzbget -A -p "password" file.nzb`).
+- **Safe Staging**: Unauthenticated ciphertext is buffered in memory or temporary files and only committed to destination files after authentication succeeds. Authentication failures trigger server failover before failing the article.
+
 ## Contribution
 
 Contributions are very welcome - not only from developers, but from our users too - please don't hesitate to participate in [discussions](https://github.com/nzbgetcom/nzbget/discussions) or [create a new discussion](https://github.com/nzbgetcom/nzbget/discussions/new/choose) or [join our Discord server](https://discord.gg/mV9Vn9sM7C).

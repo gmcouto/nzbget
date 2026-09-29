@@ -250,3 +250,19 @@ http://localhost:6789/username:password/
 Please note, that in this case the password is saved in a bookmark or in
 browser history in plain text and is easy to find by persons having
 access to your computer.
+
+### Encrypted Releases (yEnc body & control-line encryption)
+-----------------------------------------------------------
+
+NZBGet automatically downloads, authenticates, and decrypts releases protected by
+yEnc body and control-line encryption.
+
+When an NZB contains `<meta type="yenc_encrypted">true</meta>` and `<meta type="password">`,
+the embedded password is used automatically without user intervention.
+
+If an encrypted NZB does not contain an embedded password, you can provide the password:
+- Via Web-interface: Click on the download item in the queue, edit its properties, and set the "Password" field.
+- Via CLI when adding to queue:
+```
+nzbget -A -p "MyPassword" release.nzb
+```

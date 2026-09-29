@@ -4,11 +4,10 @@ import subprocess
 import pytest
 
 @pytest.fixture(scope='session', autouse=True)
-def prepare_testdata(request, check_config):
+def prepare_testdata(request, check_config, generate_nzbs):
 	print('Preparing test data for "rename"')
 
 	nserv_datadir = request.config.getini('nserv_datadir')
-	nzbget_bin = request.config.getini('nzbget_bin')
 	sevenzip_bin = request.config.getini('sevenzip_bin')
 	par2_bin = request.config.getini('par2_bin')
 
@@ -19,6 +18,9 @@ def prepare_testdata(request, check_config):
 	nzbget_srcdir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 	testdata_dir = nzbget_srcdir + '/tests/testdata'
 
+	if not os.path.exists(nserv_datadir + '/parchecker2'):
+		shutil.copytree(testdata_dir + '/parchecker2', nserv_datadir + '/parchecker2')
+
 	if not os.path.exists(nserv_datadir + '/parrename'):
 		os.makedirs(nserv_datadir + '/parrename')
 		shutil.copyfile(testdata_dir + '/rarrenamer/testfile3.part01.rar', nserv_datadir + '/parrename/testfile3.part01.rar')
@@ -27,6 +29,7 @@ def prepare_testdata(request, check_config):
 		os.chdir(nserv_datadir + '/parrename')
 		if 0 != subprocess.call([par2_bin, 'c', '-b20', 'parrename.par2', '*']):
 			pytest.exit('Test file generation failed')
+		shutil.copyfile(nserv_datadir + '/parrename/parrename.vol0+1.par2', nserv_datadir + '/parrename/parrename.par2.backup')
 		os.rename(nserv_datadir + '/parrename/testfile3.part01.rar', nserv_datadir + '/parrename/abc.21')
 		os.rename(nserv_datadir + '/parrename/testfile3.part02.rar', nserv_datadir + '/parrename/abc.02')
 		os.rename(nserv_datadir + '/parrename/testfile3.part03.rar', nserv_datadir + '/parrename/abc.15')
@@ -81,7 +84,7 @@ def prepare_testdata(request, check_config):
 		shutil.copyfile(testdata_dir + '/rarrenamer/testfile3.part02.rar', nserv_datadir + '/rar3ignoreext/testfile3-2.cbr')
 		shutil.copyfile(testdata_dir + '/rarrenamer/testfile3.part03.rar', nserv_datadir + '/rar3ignoreext/testfile3-3.cbr')
 
-	if not os.path.exists(nserv_datadir + '/parjoin1.nzb'):
+	if not os.path.exists(nserv_datadir + '/parjoin1'):
 		os.makedirs(nserv_datadir + '/parjoin1')
 		shutil.copyfile(testdata_dir + '/parchecker/testfile.dat', nserv_datadir + '/parjoin1/testfile.dat')
 		shutil.copyfile(testdata_dir + '/parchecker/testfile.nfo', nserv_datadir + '/parjoin1/testfile.nfo')
@@ -89,21 +92,26 @@ def prepare_testdata(request, check_config):
 		shutil.copyfile(testdata_dir + '/parchecker/testfile.vol00+1.PAR2', nserv_datadir + '/parjoin1/testfile.vol00+1.PAR2')
 		split_test_file(nserv_datadir + '/parjoin1', 'testfile.dat', 50244);
 
-	if not os.path.exists(nserv_datadir + '/parjoin2.nzb'):
+	if not os.path.exists(nserv_datadir + '/parjoin2'):
 		os.makedirs(nserv_datadir + '/parjoin2')
 		shutil.copyfile(testdata_dir + '/parchecker/testfile.dat', nserv_datadir + '/parjoin2/testfile.dat')
 		shutil.copyfile(testdata_dir + '/parchecker/testfile.nfo', nserv_datadir + '/parjoin2/testfile.nfo')
-		shutil.copyfile(testdata_dir + '/parchecker/testfile.par2', nserv_datadir + '/parjoin2/testfile.par2')
-		shutil.copyfile(testdata_dir + '/parchecker/testfile.vol00+1.PAR2', nserv_datadir + '/parjoin2/testfile.vol00+1.PAR2')
+		os.chdir(nserv_datadir + '/parjoin2')
+		if 0 != subprocess.call([par2_bin, 'c', '-b2', '-c1', 'testfile.par2', 'testfile.dat', 'testfile.nfo']):
+			pytest.exit('Test file generation failed')
 		split_test_file(nserv_datadir + '/parjoin2', 'testfile.dat', 50244);
 		os.rename(nserv_datadir + '/parjoin2/testfile.dat.001', nserv_datadir + '/parjoin2/renamed.001')
 		os.rename(nserv_datadir + '/parjoin2/testfile.dat.002', nserv_datadir + '/parjoin2/renamed.002')
 		os.rename(nserv_datadir + '/parjoin2/testfile.dat.003', nserv_datadir + '/parjoin2/renamed.003')
 
-	if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '3000', '-q']):
-		pytest.exit('Test file generation failed')
+	generate_nzbs([
+		'parchecker2', 'parrename', 'rarrename3', 'rarrename5', 'rarrename3encdata',
+		'rarrename5encdata', 'rarrename3encnam', 'rarrename5encnam', 'rarrename2sets',
+		'rarrename3oldnam', 'rarrename3badext', 'rarrename5badext', 'rar3ignoreext',
+		'parjoin1', 'parjoin2'
+	], 3000)
 
-	if not os.path.exists(nserv_datadir + '/parjoin3.nzb'):
+	if not os.path.exists(nserv_datadir + '/parjoin3'):
 		os.makedirs(nserv_datadir + '/parjoin3')
 		create_test_file(nserv_datadir + '/parjoin3', None, 20, 1)
 		os.chdir(nserv_datadir + '/parjoin3')
@@ -113,8 +121,8 @@ def prepare_testdata(request, check_config):
 		os.rename(nserv_datadir + '/parjoin3/20mb.dat.001', nserv_datadir + '/parjoin3/renamed.001')
 		os.rename(nserv_datadir + '/parjoin3/20mb.dat.002', nserv_datadir + '/parjoin3/renamed.002')
 		os.rename(nserv_datadir + '/parjoin3/20mb.dat.003', nserv_datadir + '/parjoin3/renamed.003')
-		if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '100000', '-q']):
-			pytest.exit('Test file generation failed')
+
+	generate_nzbs(['parjoin3'], 100000)
 
 	if not os.path.exists(nserv_datadir + '/rarrename3sm'):
 		os.makedirs(nserv_datadir + '/rarrename3sm')
@@ -124,13 +132,13 @@ def prepare_testdata(request, check_config):
 		os.chdir(nserv_datadir + '/rarrename3sm')
 		if 0 != subprocess.call([par2_bin, 'c', '-b100', 'parrename.par2', '*']):
 			pytest.exit('Test file generation failed')
-		if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '500', '-q']):
-			pytest.exit('Test file generation failed')
 
-	if not os.path.exists(nserv_datadir + '/obfuscated1.nzb'):
+	generate_nzbs(['rarrename3sm'], 500)
+
+	if not os.path.exists(nserv_datadir + '/obfuscated1'):
 		create_test_file(nserv_datadir + '/obfuscated1', sevenzip_bin, 5, 1)
 		os.chdir(nserv_datadir + '/obfuscated1')
-		if 0 != subprocess.call([par2_bin, 'c', '-b100', 'parrename.par2', '*']):
+		if 0 != subprocess.call([par2_bin, 'c', '-b10', '-c12', 'parrename.par2', '*']):
 			pytest.exit('Test file generation failed')
 		os.rename(nserv_datadir + '/obfuscated1/5mb.7z.001', nserv_datadir + '/obfuscated1/abc.51')
 		os.rename(nserv_datadir + '/obfuscated1/5mb.7z.002', nserv_datadir + '/obfuscated1/abc.01')
@@ -138,10 +146,8 @@ def prepare_testdata(request, check_config):
 		os.rename(nserv_datadir + '/obfuscated1/5mb.7z.004', nserv_datadir + '/obfuscated1/abc.34')
 		os.rename(nserv_datadir + '/obfuscated1/5mb.7z.005', nserv_datadir + '/obfuscated1/abc.17')
 		os.rename(nserv_datadir + '/obfuscated1/5mb.7z.006', nserv_datadir + '/obfuscated1/abc.00')
-		if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '100000', '-q']):
-			pytest.exit('Test file generation failed')
 
-	if not os.path.exists(nserv_datadir + '/obfuscated2.nzb'):
+	if not os.path.exists(nserv_datadir + '/obfuscated2'):
 		create_test_file(nserv_datadir + '/obfuscated2', sevenzip_bin, 5, 1)
 		os.chdir(nserv_datadir + '/obfuscated2')
 		if 0 != subprocess.call([par2_bin, 'c', '-b100', 'parrename.par2', '*']):
@@ -156,10 +162,8 @@ def prepare_testdata(request, check_config):
 		os.rename(nserv_datadir + '/obfuscated2/parrename.vol0+1.par2', nserv_datadir + '/obfuscated2/abc.95')
 		os.rename(nserv_datadir + '/obfuscated2/parrename.vol1+2.par2', nserv_datadir + '/obfuscated2/abc.91')
 		os.rename(nserv_datadir + '/obfuscated2/parrename.vol3+2.par2', nserv_datadir + '/obfuscated2/abc.92')
-		if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '100000', '-q']):
-			pytest.exit('Test file generation failed')
 
-	if not os.path.exists(nserv_datadir + '/obfuscated3.nzb'):
+	if not os.path.exists(nserv_datadir + '/obfuscated3'):
 		create_test_file(nserv_datadir + '/obfuscated3', sevenzip_bin, 100, 10)
 		os.chdir(nserv_datadir + '/obfuscated3')
 		if 0 != subprocess.call([par2_bin, 'c', '-b100', 'parrename.par2', '*']):
@@ -179,8 +183,9 @@ def prepare_testdata(request, check_config):
 		os.rename(nserv_datadir + '/obfuscated3/parrename.vol0+1.par2', nserv_datadir + '/obfuscated3/abc.02')
 		os.rename(nserv_datadir + '/obfuscated3/parrename.vol1+2.par2', nserv_datadir + '/obfuscated3/abc.91')
 		os.rename(nserv_datadir + '/obfuscated3/parrename.vol3+2.par2', nserv_datadir + '/obfuscated3/abc.92')
-		if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '100000', '-q']):
-			pytest.exit('Test file generation failed')
+
+	generate_nzbs(['obfuscated1', 'obfuscated2', 'obfuscated3'], 100000)
+
 
 def create_test_file(bigdir, sevenzip_bin, sizemb, partmb):
 	print('Preparing test file (' + str(sizemb) + 'MB)')

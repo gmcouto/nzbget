@@ -655,7 +655,8 @@ bool RarVolume::DecryptInit(int keyLength)
 
 	if (!EVP_DecryptInit(m_context.get(),
 		keyLength == 128 ? EVP_aes_128_cbc() : EVP_aes_256_cbc(),
-		m_decryptKey, m_decryptIV))
+		m_decryptKey, m_decryptIV) ||
+		!EVP_CIPHER_CTX_set_padding(m_context.get(), 0))
 		return false;
 	return true;
 #else
@@ -668,9 +669,8 @@ bool RarVolume::DecryptBuf(const uint8 in[16], uint8 out[16])
 #ifndef DISABLE_TLS
 	uint8 outbuf[32];
 	int outlen = 0;
-	if (!EVP_DecryptUpdate(m_context.get(), outbuf, &outlen, in, 16)) return false;
-	memcpy(out, outbuf + outlen, 16);
-	debug("decrypted: %s", *Util::FormatBuffer((const char*)out, 16));
+	if (!EVP_DecryptUpdate(m_context.get(), outbuf, &outlen, in, 16) || outlen != 16) return false;
+	memcpy(out, outbuf, 16);
 	return true;
 #else
 	return false;

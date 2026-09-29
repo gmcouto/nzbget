@@ -39,10 +39,9 @@ std::string LoadFixtureText(const std::string& filename)
 {
 	namespace fs = std::filesystem;
 	const std::vector<fs::path> candidates = {
-		fs::path(__FILE__).parent_path() / ".." / ".." / ".." / "yenc-encryption-standards" / "test-vectors" / filename,
-		fs::current_path() / "yenc-encryption-standards" / "test-vectors" / filename,
-		fs::current_path() / ".." / "yenc-encryption-standards" / "test-vectors" / filename,
-		fs::current_path() / ".." / ".." / "yenc-encryption-standards" / "test-vectors" / filename
+		fs::path(__FILE__).parent_path() / ".." / "testdata" / "test-vectors" / filename,
+		fs::current_path() / "tests" / "testdata" / "test-vectors" / filename,
+		fs::current_path() / "testdata" / "test-vectors" / filename
 	};
 	for (const auto& path : candidates)
 	{

@@ -165,11 +165,23 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 			{
 				complete = true;
 			}
-			else if (m_wireBuffer.size() >= 3 && m_wireBuffer.substr(m_wireBuffer.size() - 3) == ".\r\n")
+			else if (m_wireBuffer.size() == 3 && m_wireBuffer == ".\r\n")
 			{
 				complete = true;
 			}
-			else if (m_wireBuffer.size() >= 2 && m_wireBuffer.substr(m_wireBuffer.size() - 2) == ".\n")
+			else if (m_wireBuffer.size() == 2 && m_wireBuffer == ".\n")
+			{
+				complete = true;
+			}
+			else if (m_wireBuffer.size() >= 5 && m_wireBuffer.substr(m_wireBuffer.size() - 5) == "\r\n.\r\n")
+			{
+				complete = true;
+			}
+			else if (m_wireBuffer.size() >= 3 && m_wireBuffer.substr(m_wireBuffer.size() - 3) == "\n.\n")
+			{
+				complete = true;
+			}
+			else if (m_wireBuffer.size() >= 4 && m_wireBuffer.substr(m_wireBuffer.size() - 4) == "\n.\r\n")
 			{
 				complete = true;
 			}

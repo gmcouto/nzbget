@@ -53,6 +53,40 @@ def check_config(request):
 	global nzbget_configfile
 	nzbget_configfile = nzbget_maindir + '/nzbget.conf'
 
+
+@pytest.fixture(scope='session')
+def generate_nzbs(check_config):
+	def generate(names, segment_size):
+		generated_dir = os.path.join(nserv_datadir, '.generated')
+		if os.path.exists(generated_dir):
+			shutil.rmtree(generated_dir)
+		os.makedirs(generated_dir)
+
+		for name in names:
+			source = os.path.join(nserv_datadir, name)
+			target = os.path.join(generated_dir, name)
+			if os.path.isdir(source):
+				os.symlink(source, target, target_is_directory=True)
+			else:
+				os.symlink(source, target)
+
+		if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', generated_dir, '-v', '2', '-z', str(segment_size), '-q']):
+			pytest.exit('Test file generation failed')
+
+		for name in names:
+			generated_nzb = os.path.join(generated_dir, name + '.nzb')
+			if not os.path.exists(generated_nzb):
+				pytest.exit('NZB generation did not produce: ' + name + '.nzb')
+			with open(generated_nzb, 'r') as infile:
+				content = infile.read()
+			with open(os.path.join(nserv_datadir, name + '.nzb'), 'w') as outfile:
+				outfile.write(content)
+
+		shutil.rmtree(generated_dir)
+
+	return generate
+
+
 class NServ:
 
 	def __init__(self):

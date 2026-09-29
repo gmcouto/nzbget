@@ -197,72 +197,79 @@ BOOST_AUTO_TEST_CASE(Rar3EcryptedNamesTest)
 		BOOST_CHECK_EQUAL(volume.GetEncrypted(), true);
 	}
 
-	// {
-	// 	RarVolume volume((testDataDir + PATH_SEPARATOR + "testfile3encnam.part01.rar").string().c_str());
-	// 	volume.SetPassword("123");
-	// 	BOOST_CHECK_EQUAL(volume.Read(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetVersion(), 3);
-	// 	BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 0);
-	// }
-	// {
-	// 	RarVolume volume((testDataDir + PATH_SEPARATOR + "testfile3encnam.part02.rar").string().c_str());
-	// 	volume.SetPassword("123");
-	// 	BOOST_CHECK_EQUAL(volume.Read(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetVersion(), 3);
-	// 	BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 1);
-	// }
-	// {
-	// 	RarVolume volume((testDataDir + "/testfile3encnam.part03.rar").string().c_str());
-	// 	volume.SetPassword("123");
-	// 	BOOST_CHECK_EQUAL(volume.Read(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetVersion(), 3);
-	// 	BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
-	// 	BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 2);
-	// }
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile3encnam.part01.rar";
+		RarVolume volume(file.string().c_str());
+		volume.SetPassword("123");
+		BOOST_CHECK_EQUAL(volume.Read(), true);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 3);
+		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
+		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
+		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 0);
+	}
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile3encnam.part02.rar";
+		RarVolume volume(file.string().c_str());
+		volume.SetPassword("123");
+		BOOST_CHECK_EQUAL(volume.Read(), true);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 3);
+		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
+		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
+		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 1);
+	}
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile3encnam.part03.rar";
+		RarVolume volume(file.string().c_str());
+		volume.SetPassword("123");
+		BOOST_CHECK_EQUAL(volume.Read(), true);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 3);
+		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
+		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
+		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 2);
+	}
 }
 
-// BOOST_AUTO_TEST_CASE(Rar5EncryptedNames)
-// {
-// 	{
-// 		RarVolume volume((testDataDir + PATH_SEPARATOR + "testfile5encnam.part01.rar").string().c_str());
-// 		volume.SetPassword("123");
-// 		BOOST_CHECK_EQUAL(volume.Read(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
-// 		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 0);
-// 	}
-// 	{
-// 		RarVolume volume((testDataDir + PATH_SEPARATOR + "testfile5encnam.part02.rar").string().c_str());
-// 		volume.SetPassword("123");
-// 		BOOST_CHECK_EQUAL(volume.Read(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
-// 		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 1);
-// 	}
-// 	{
-// 		RarVolume volume((testDataDir + "/testfile5encnam.part03.rar").string().c_str());
-// 		volume.SetPassword("123");
-// 		BOOST_CHECK_EQUAL(volume.Read(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
-// 		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
-// 		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 2);
-// 	}
+BOOST_AUTO_TEST_CASE(Rar5EncryptedNames)
+{
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile5encnam.part01.rar";
+		RarVolume volume(file.string().c_str());
+		volume.SetPassword("123");
+		BOOST_CHECK_EQUAL(volume.Read(), true);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
+		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
+		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
+		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 0);
+	}
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile5encnam.part02.rar";
+		RarVolume volume(file.string().c_str());
+		volume.SetPassword("123");
+		BOOST_CHECK_EQUAL(volume.Read(), true);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
+		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
+		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
+		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 1);
+	}
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile5encnam.part03.rar";
+		RarVolume volume(file.string().c_str());
+		volume.SetPassword("123");
+		BOOST_CHECK_EQUAL(volume.Read(), true);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
+		BOOST_CHECK_EQUAL(volume.GetMultiVolume(), true);
+		BOOST_CHECK_EQUAL(volume.GetNewNaming(), true);
+		BOOST_CHECK_EQUAL(volume.GetVolumeNo(), 2);
+	}
 
-// 	{
-// 		RarVolume volume((testDataDir + PATH_SEPARATOR + "testfile5encnam.part01.rar").string().c_str());
-// 		BOOST_CHECK_EQUAL(volume.Read(), false);
-// 		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
-// 		BOOST_CHECK_EQUAL(volume.GetEncrypted(), true);
-// 	}
-// }
+	{
+		const fs::path file = TEST_DATA_DIR / "testfile5encnam.part01.rar";
+		RarVolume volume(file.string().c_str());
+		BOOST_CHECK_EQUAL(volume.Read(), false);
+		BOOST_CHECK_EQUAL(volume.GetVersion(), 5);
+		BOOST_CHECK_EQUAL(volume.GetEncrypted(), true);
+	}
+}
 
 #endif
 

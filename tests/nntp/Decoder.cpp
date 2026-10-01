@@ -304,7 +304,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 
 	// Build raw wire article:
 	// line 1: =ybegin line=128 size=16 name=test.dat
-	// line 2: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b
+	// line 2: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b
 	// line 3: <yenc encoded ct>
 	// line 4: =yend size=16 crc32=...
 	// line 5: .
@@ -316,7 +316,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 		segmentIndex, 1, true, salt.data(), wireLine1
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b";
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
@@ -406,7 +406,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 		segmentIndex, 2, false, salt.data(), wireLine2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line3Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::string line3Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b";
 	std::vector<uint8_t> wireLine3;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line3Plain.data()), line3Plain.size(),
@@ -467,10 +467,11 @@ BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 	BOOST_CHECK_EQUAL_COLLECTIONS(pt.begin(), pt.end(), expectedPlaintext.begin(), expectedPlaintext.end());
 }
 
-BOOST_AUTO_TEST_CASE(DecoderMissingSegmentIndexFailsClosedTest)
+BOOST_AUTO_TEST_CASE(DecoderDualBootstrapMismatchFailsClosedTest)
 {
 	std::string password = "test123";
-	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> salt1 = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> salt2 = HexToBytesHelper("ffffffffffffffffffffffffffffffff");
 	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
 	uint32_t segmentIndex = 1;
 
@@ -479,14 +480,15 @@ BOOST_AUTO_TEST_CASE(DecoderMissingSegmentIndexFailsClosedTest)
 	std::vector<uint8_t> wireLine1;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
-		segmentIndex, 1, true, salt.data(), wireLine1
+		segmentIndex, 1, true, salt1.data(), wireLine1
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	// Header has mismatched salt (salt2 instead of salt1)
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=ffffffffffffffffffffffffffffffff index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b";
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
-		segmentIndex, 2, false, salt.data(), wireLine2
+		segmentIndex, 2, false, salt1.data(), wireLine2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
 	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
@@ -501,7 +503,7 @@ BOOST_AUTO_TEST_CASE(DecoderMissingSegmentIndexFailsClosedTest)
 	std::vector<uint8_t> wireLine4;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
-		segmentIndex, 4, false, salt.data(), wireLine4
+		segmentIndex, 4, false, salt1.data(), wireLine4
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
 	std::string fullWire;
@@ -514,17 +516,15 @@ BOOST_AUTO_TEST_CASE(DecoderMissingSegmentIndexFailsClosedTest)
 	fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
 	fullWire.append("\r\n.\r\n");
 
-	// Test with segmentIndex = 0 (missing segmentIndex)
+	// Test Decoder discovers from wire without SetSegmentIndex, but fails closed on Dual-Bootstrap mismatch
 	Decoder decoder;
 	decoder.SetPassword(password.c_str());
-	decoder.SetSegmentIndex(0); // explicitly zero
 	decoder.SetCrcCheck(true);
 
 	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
 
 	auto checkStatus = decoder.Check();
-	// Must fail closed with dsAuthFailed, dsNoBinaryData, or dsUnknownError
-	BOOST_CHECK(checkStatus == Decoder::dsAuthFailed || checkStatus == Decoder::dsNoBinaryData || checkStatus == Decoder::dsUnknownError);
+	BOOST_CHECK(checkStatus == Decoder::dsAuthFailed);
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 

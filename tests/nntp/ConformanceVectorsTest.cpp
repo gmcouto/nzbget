@@ -199,6 +199,15 @@ BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectors)
 			const auto ciphertext = HexToBin(JsonString(vector, "expected_ciphertext_hex"));
 			const auto tag = HexToBin(JsonString(vector, "expected_tag_hex"));
 			const auto expectedPlaintext = HexToBin(JsonString(vector, "plaintext_hex"));
+			const std::string expectedIndexHex = JsonString(vector, "expected_index_hex");
+			const std::string expectedYEncLine = JsonString(vector, "expected_yencryption_line");
+
+			// Verify 5-token header parsing with index
+			YEncDecryptor::YEncryptionHeader header;
+			BOOST_REQUIRE(YEncDecryptor::ParseYEncryption(expectedYEncLine.data(), expectedYEncLine.size(), header));
+			BOOST_CHECK_EQUAL(header.indexHex, expectedIndexHex);
+			BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
+
 			YEncDecryptor decryptor(JsonString(vector, "password"));
 			std::vector<uint8_t> plaintext;
 			const auto status = decryptor.AuthenticateAndDecrypt(
@@ -242,14 +251,16 @@ BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
 					}
 					std::vector<uint8_t> restored;
 					std::vector<uint8_t> extractedSalt;
+					uint32_t extractedIndex = 0;
 					const auto status = decryptor.DecryptControlLine(
 						wire.data(), wire.size(), segmentIndex, static_cast<uint32_t>(i + 1), i == 0,
-						restored, i == 0 ? &extractedSalt : nullptr);
+						restored, i == 0 ? &extractedSalt : nullptr, i == 0 ? &extractedIndex : nullptr);
 					BOOST_REQUIRE(status == YEncDecryptor::Status::Ok);
 					BOOST_CHECK_EQUAL(std::string(restored.begin(), restored.end()), plaintext);
 					if (i == 0)
 					{
 						BOOST_CHECK_EQUAL(BinToHex(extractedSalt), BinToHex(salt));
+						BOOST_CHECK_EQUAL(extractedIndex, segmentIndex);
 					}
 				}
 			}
@@ -258,6 +269,7 @@ BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
 				const auto wire = HexToBin(JsonString(vector, "expected_wire_hex"));
 				std::vector<uint8_t> plaintext;
 				std::vector<uint8_t> extractedSalt;
+				uint32_t extractedIndex = 0;
 				const bool isLine1 = vector.at("is_line_1").as_bool();
 				if (!isLine1)
 				{
@@ -266,12 +278,13 @@ BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
 				}
 				const auto status = decryptor.DecryptControlLine(
 					wire.data(), wire.size(), segmentIndex, JsonUint32(vector, "line_index"), isLine1,
-					plaintext, isLine1 ? &extractedSalt : nullptr);
+					plaintext, isLine1 ? &extractedSalt : nullptr, isLine1 ? &extractedIndex : nullptr);
 				BOOST_REQUIRE(status == YEncDecryptor::Status::Ok);
 				BOOST_CHECK_EQUAL(std::string(plaintext.begin(), plaintext.end()), JsonString(vector, "plaintext_line"));
 				if (isLine1)
 				{
 					BOOST_CHECK_EQUAL(BinToHex(extractedSalt), BinToHex(salt));
+					BOOST_CHECK_EQUAL(extractedIndex, segmentIndex);
 				}
 			}
 		}
@@ -282,14 +295,12 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 {
 	const auto fixture = LoadFixture("malformed_inputs.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	const size_t testCount = 21;
-	BOOST_REQUIRE(vectors.size() >= testCount);
 
-	for (size_t i = 0; i < testCount; ++i)
+	for (const auto& item : vectors)
 	{
-		const auto& item = vectors[i];
 		const auto& vector = item.as_object();
-		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
+		const std::string id = JsonString(vector, "id");
+		BOOST_TEST_CONTEXT(id)
 		{
 			const std::string category = JsonString(vector, "category");
 			std::vector<uint8_t> output;
@@ -313,9 +324,8 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
 				CheckZeroOutput(vector, output);
 			}
-			else
+			else if (category == "control_syntax")
 			{
-				const std::string id = JsonString(vector, "id");
 				YEncDecryptor decryptor(vector.contains("wrong_password") ? JsonString(vector, "wrong_password") : "test123");
 				std::vector<uint8_t> wire;
 				bool isLine1 = true;
@@ -335,11 +345,11 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				}
 				else
 				{
-					wire = HexToBin("4b376d5839704c32715238764e34775a3ff69054da2b2309591e740e5b9fd79015f610d42f01bd203e5f55dadc39fc760407e845201f");
+					wire = HexToBin("4b376d5839704c32715238764e34775a000000013ff69054da2b2309591e740e5b9fd79015f610d42f01bd203e5f55dadc39fc760407e845201f");
 				}
 				const auto status = decryptor.DecryptControlLine(
 					wire.data(), wire.size(), 1, isLine1 ? 1 : 2, isLine1, output);
-				if (id == "control-syntax-06-wrong-password")
+				if (id == "control-syntax-06-wrong-password" || id == "control-syntax-07-wrong-password")
 				{
 					const bool restoredControlLine = status == YEncDecryptor::Status::Ok &&
 						output.size() >= 2 && output[0] == '=' && output[1] == 'y';
@@ -354,6 +364,46 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 					BOOST_CHECK(status != YEncDecryptor::Status::Ok);
 					CheckZeroOutput(vector, output);
 				}
+			}
+			else if (category == "salt_mismatch")
+			{
+				YEncDecryptor decryptor("test123");
+				// Test Dual-Bootstrap Agreement failure:
+				// line 1 has line1_salt_hex and line1_index
+				// header has header_salt_hex and header_index
+				const auto line1Salt = HexToBin(JsonString(vector, "line1_salt_hex"));
+				const uint32_t line1Index = JsonUint32(vector, "line1_index");
+				const auto headerSaltHex = JsonString(vector, "header_salt_hex");
+				const uint32_t headerIndex = JsonUint32(vector, "header_index");
+
+				std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+				std::vector<uint8_t> wire1;
+				BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+					reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+					line1Index, 1, true, line1Salt.data(), wire1
+				)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+				std::ostringstream hOss;
+				hOss << "=yencryption cipher=XChaCha20-Poly1305 salt=" << headerSaltHex
+					 << " index=" << std::hex << std::setw(8) << std::setfill('0') << headerIndex
+					 << " tag=0cd77ce245a654463f90b945b1d22d5b";
+				std::string line2Plain = hOss.str();
+				std::vector<uint8_t> wire2;
+				BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+					reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+					line1Index, 2, false, line1Salt.data(), wire2
+				)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+				std::string block;
+				block.append(reinterpret_cast<const char*>(wire1.data()), wire1.size()); block.append("\r\n");
+				block.append(reinterpret_cast<const char*>(wire2.data()), wire2.size()); block.append("\r\n");
+				block.append("data\r\n=yend size=16\r\n");
+
+				std::string clean;
+				std::vector<uint8_t> outSalt;
+				bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
+				BOOST_CHECK(!ok);
+				BOOST_CHECK(clean.empty());
 			}
 		}
 	}

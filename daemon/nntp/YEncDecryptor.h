@@ -68,7 +68,8 @@ public:
 	);
 
 	// Decrypt control line using Radix-253 FF1.
-	// If isLine1 == true, extracts 16-byte salt from the wire data prefix and decrypts the remainder.
+	// If isLine1 == true, extracts 20-byte bootstrap ([16B salt][4B uint32_be(segmentIndex)])
+	// from the wire data prefix and decrypts the remainder.
 	Status DecryptControlLine(
 		const uint8_t* wireData,
 		size_t wireLen,
@@ -76,16 +77,19 @@ public:
 		uint32_t lineIndex,
 		bool isLine1,
 		std::vector<uint8_t>& outPlaintext,
-		std::vector<uint8_t>* outSalt = nullptr
+		std::vector<uint8_t>* outSalt = nullptr,
+		uint32_t* outSegmentIndex = nullptr
 	);
 
 	struct YEncryptionHeader
 	{
 		std::string cipher;
 		std::string saltHex;
+		std::string indexHex;
 		std::string tagHex;
 		std::vector<uint8_t> salt;
 		std::vector<uint8_t> tag;
+		uint32_t segmentIndex = 0;
 	};
 
 	static bool ParseYEncryption(
@@ -111,6 +115,15 @@ public:
 		uint8_t outTag[16]
 	);
 
+	static bool ParseYEncryption(
+		const char* line,
+		size_t lineLen,
+		std::string& outCipher,
+		uint8_t outSalt[16],
+		uint8_t outTag[16],
+		uint32_t& outSegmentIndex
+	);
+
 	bool RestoreControlLines(
 		const char* wireBlock,
 		size_t wireLen,
@@ -119,6 +132,17 @@ public:
 		std::vector<uint8_t>& outLine1Salt,
 		YEncryptionHeader* outHeader = nullptr
 	);
+
+	bool RestoreControlLines(
+		const char* wireBlock,
+		size_t wireLen,
+		std::string& outCleanBlock,
+		std::vector<uint8_t>& outLine1Salt,
+		YEncryptionHeader* outHeader = nullptr
+	)
+	{
+		return RestoreControlLines(wireBlock, wireLen, 0, outCleanBlock, outLine1Salt, outHeader);
+	}
 
 	Status EncryptControlLine(
 		const uint8_t* plainData,

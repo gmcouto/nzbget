@@ -538,16 +538,19 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	uint32_t lineIndex,
 	bool isLine1,
 	std::vector<uint8_t>& outPlaintext,
-	std::vector<uint8_t>* outSalt)
+	std::vector<uint8_t>* outSalt,
+	uint32_t* outSegmentIndex)
 {
 	outPlaintext.clear();
 
 	const uint8_t* ctBytes = wireData;
 	size_t ctLen = wireLen;
+	uint32_t effectiveSegmentIndex = segmentIndex;
 
 	if (isLine1)
 	{
-		if (wireLen < 18)
+		// 16B salt + 4B uint32_be(segmentIndex) + at least 2B FF1 ciphertext = 22 bytes minimum
+		if (wireLen < 22)
 		{
 			return Status::Error;
 		}
@@ -559,16 +562,34 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 				return Status::Error;
 			}
 		}
+
+		uint32_t extractedIndex =
+			(static_cast<uint32_t>(wireData[16]) << 24) |
+			(static_cast<uint32_t>(wireData[17]) << 16) |
+			(static_cast<uint32_t>(wireData[18]) << 8) |
+			static_cast<uint32_t>(wireData[19]);
+
+		if (extractedIndex == 0)
+		{
+			return Status::Error;
+		}
+
 		if (outSalt)
 		{
 			outSalt->assign(salt, salt + 16);
+		}
+		if (outSegmentIndex)
+		{
+			*outSegmentIndex = extractedIndex;
 		}
 		if (!EnsureMasterKey(salt))
 		{
 			return Status::Error;
 		}
-		ctBytes = wireData + 16;
-		ctLen = wireLen - 16;
+
+		effectiveSegmentIndex = extractedIndex;
+		ctBytes = wireData + 20;
+		ctLen = wireLen - 20;
 	}
 	else
 	{
@@ -589,7 +610,7 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 
 	uint8_t encKey[32];
 	uint8_t tweak[8];
-	if (!DeriveControlKeyAndTweak(segmentIndex, lineIndex, encKey, tweak))
+	if (!DeriveControlKeyAndTweak(effectiveSegmentIndex, lineIndex, encKey, tweak))
 	{
 		return Status::Error;
 	}
@@ -666,27 +687,42 @@ bool YEncDecryptor::ParseYEncryption(
 			start = i + 1;
 		}
 	}
-	if (tokens.size() != 4 || tokens[0] != "=yencryption" || tokens[1] != "cipher=XChaCha20-Poly1305")
+	if (tokens.size() != 5 || tokens[0] != "=yencryption" || tokens[1] != "cipher=XChaCha20-Poly1305")
 	{
 		return false;
 	}
-	if (tokens[2].rfind("salt=", 0) != 0 || tokens[3].rfind("tag=", 0) != 0)
+	if (tokens[2].rfind("salt=", 0) != 0 || tokens[3].rfind("index=", 0) != 0 || tokens[4].rfind("tag=", 0) != 0)
 	{
 		return false;
 	}
 	const std::string_view saltHex = tokens[2].substr(5);
-	const std::string_view tagHex = tokens[3].substr(4);
-	if (saltHex.size() != 32 || tagHex.size() != 32 ||
-		!IsStrictLowerHex(saltHex.data(), saltHex.size()) || !IsStrictLowerHex(tagHex.data(), tagHex.size()))
+	const std::string_view indexHex = tokens[3].substr(6);
+	const std::string_view tagHex = tokens[4].substr(4);
+	if (saltHex.size() != 32 || indexHex.size() != 8 || tagHex.size() != 32 ||
+		!IsStrictLowerHex(saltHex.data(), saltHex.size()) ||
+		!IsStrictLowerHex(indexHex.data(), indexHex.size()) ||
+		!IsStrictLowerHex(tagHex.data(), tagHex.size()))
+	{
+		return false;
+	}
+
+	uint32_t parsedIndex = 0;
+	for (char c : indexHex)
+	{
+		parsedIndex = (parsedIndex << 4) | (c >= 'a' ? (c - 'a' + 10) : (c - '0'));
+	}
+	if (parsedIndex == 0)
 	{
 		return false;
 	}
 
 	outHeader.cipher = "XChaCha20-Poly1305";
 	outHeader.saltHex = std::string(saltHex);
+	outHeader.indexHex = std::string(indexHex);
 	outHeader.tagHex = std::string(tagHex);
 	outHeader.salt.resize(16);
 	outHeader.tag.resize(16);
+	outHeader.segmentIndex = parsedIndex;
 	return HexToBytesStrict(saltHex.data(), saltHex.size(), outHeader.salt.data(), outHeader.salt.size()) &&
 		HexToBytesStrict(tagHex.data(), tagHex.size(), outHeader.tag.data(), outHeader.tag.size());
 }
@@ -696,7 +732,8 @@ bool YEncDecryptor::ParseYEncryption(
 	size_t lineLen,
 	std::string& outCipher,
 	uint8_t outSalt[16],
-	uint8_t outTag[16])
+	uint8_t outTag[16],
+	uint32_t& outSegmentIndex)
 {
 	YEncryptionHeader header;
 	if (!ParseYEncryption(line, lineLen, header))
@@ -706,7 +743,19 @@ bool YEncDecryptor::ParseYEncryption(
 	outCipher = header.cipher;
 	memcpy(outSalt, header.salt.data(), 16);
 	memcpy(outTag, header.tag.data(), 16);
+	outSegmentIndex = header.segmentIndex;
 	return true;
+}
+
+bool YEncDecryptor::ParseYEncryption(
+	const char* line,
+	size_t lineLen,
+	std::string& outCipher,
+	uint8_t outSalt[16],
+	uint8_t outTag[16])
+{
+	uint32_t dummyIndex = 0;
+	return ParseYEncryption(line, lineLen, outCipher, outSalt, outTag, dummyIndex);
 }
 
 YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
@@ -743,6 +792,10 @@ YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
 		if (isLine1)
 		{
 			outWireData.insert(outWireData.end(), salt, salt + 16);
+			outWireData.push_back(static_cast<uint8_t>((segmentIndex >> 24) & 0xff));
+			outWireData.push_back(static_cast<uint8_t>((segmentIndex >> 16) & 0xff));
+			outWireData.push_back(static_cast<uint8_t>((segmentIndex >> 8) & 0xff));
+			outWireData.push_back(static_cast<uint8_t>(segmentIndex & 0xff));
 		}
 		for (uint8_t numeral : cipherNumerals)
 		{
@@ -771,7 +824,7 @@ bool YEncDecryptor::RestoreControlLines(
 {
 	outCleanBlock.clear();
 	outLine1Salt.clear();
-	if (!wireBlock || wireLen == 0 || segmentIndex == 0)
+	if (!wireBlock || wireLen == 0)
 	{
 		return false;
 	}
@@ -804,12 +857,19 @@ bool YEncDecryptor::RestoreControlLines(
 	}
 
 	std::vector<uint8_t> restored;
+	uint32_t line1SegmentIndex = 0;
 	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[0].data), lines[0].len,
-		segmentIndex, 1, true, restored, &outLine1Salt) != Status::Ok ||
-		restored.size() < 8 || memcmp(restored.data(), "=ybegin ", 8) != 0)
+		segmentIndex, 1, true, restored, &outLine1Salt, &line1SegmentIndex) != Status::Ok ||
+		restored.size() < 8 || memcmp(restored.data(), "=ybegin ", 8) != 0 ||
+		line1SegmentIndex == 0)
 	{
 		return false;
 	}
+	if (segmentIndex > 0 && line1SegmentIndex != segmentIndex)
+	{
+		return false;
+	}
+
 	const std::string begin(restored.begin(), restored.end());
 	outCleanBlock.append(begin).append(lines[0].ending);
 	const bool multipart = begin.find(" part=") != std::string::npos;
@@ -817,7 +877,7 @@ bool YEncDecryptor::RestoreControlLines(
 	if (multipart)
 	{
 		if (lines.size() < 4 || DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[1].data), lines[1].len,
-			segmentIndex, 2, false, restored) != Status::Ok || restored.size() < 7 ||
+			line1SegmentIndex, 2, false, restored) != Status::Ok || restored.size() < 7 ||
 			memcmp(restored.data(), "=ypart ", 7) != 0)
 		{
 			return false;
@@ -827,9 +887,16 @@ bool YEncDecryptor::RestoreControlLines(
 
 	YEncryptionHeader header;
 	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[headerIndex].data), lines[headerIndex].len,
-		segmentIndex, static_cast<uint32_t>(headerIndex + 1), false, restored) != Status::Ok ||
-		!ParseYEncryption(reinterpret_cast<const char*>(restored.data()), restored.size(), header) ||
-		header.salt != outLine1Salt)
+		line1SegmentIndex, static_cast<uint32_t>(headerIndex + 1), false, restored) != Status::Ok ||
+		!ParseYEncryption(reinterpret_cast<const char*>(restored.data()), restored.size(), header))
+	{
+		outCleanBlock.clear();
+		outLine1Salt.clear();
+		return false;
+	}
+
+	// Enforce Dual-Bootstrap Agreement
+	if (header.salt != outLine1Salt || header.segmentIndex != line1SegmentIndex)
 	{
 		outCleanBlock.clear();
 		outLine1Salt.clear();
@@ -847,7 +914,7 @@ bool YEncDecryptor::RestoreControlLines(
 
 	const size_t footerIndex = lines.size() - 1;
 	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[footerIndex].data), lines[footerIndex].len,
-		segmentIndex, static_cast<uint32_t>(lines.size()), false, restored) != Status::Ok ||
+		line1SegmentIndex, static_cast<uint32_t>(lines.size()), false, restored) != Status::Ok ||
 		restored.size() < 5 || memcmp(restored.data(), "=yend", 5) != 0)
 	{
 		return false;

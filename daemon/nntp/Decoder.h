@@ -71,6 +71,7 @@ public:
 	void SetPassword(const char* password);
 	void SetDecryptor(YEncDecryptor* decryptor) { m_decryptor = decryptor; }
 	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
+	uint32 GetSegmentIndex() const { return m_segmentIndex; }
 	bool IsEncrypted() const { return m_encrypted; }
 	const uint8_t* GetSalt() const { return m_salt; }
 	const uint8_t* GetTag() const { return m_tag; }

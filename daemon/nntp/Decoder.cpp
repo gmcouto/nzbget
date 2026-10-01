@@ -95,7 +95,7 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	bool alreadyBuffered = false;
 
 	// Check if candidate for encrypted wire mode
-	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty() && m_segmentIndex > 0)))
+	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty())))
 	{
 		m_wireBuffer.append(buffer, len);
 
@@ -119,19 +119,22 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 				{
 					std::vector<uint8_t> ptLine1;
 					std::vector<uint8_t> salt1;
+					uint32_t extractedIndex = 0;
 					auto st = m_decryptor->DecryptControlLine(
 						reinterpret_cast<const uint8_t*>(line1.data()),
 						line1.size(),
-						m_segmentIndex,
+						0,
 						1,
 						true,
 						ptLine1,
-						&salt1
+						&salt1,
+						&extractedIndex
 					);
 					if (st == YEncDecryptor::Status::Ok && ptLine1.size() >= 8 && memcmp(ptLine1.data(), "=ybegin ", 8) == 0)
 					{
 						m_encryptedWireMode = true;
 						m_format = efYenc;
+						m_segmentIndex = extractedIndex;
 					}
 					else
 					{
@@ -429,9 +432,21 @@ void Decoder::ProcessYenc(char* buffer, int len)
 void Decoder::ParseEncryption(const char* buffer, int len)
 {
 	m_encrypted = true;
-	if (!YEncDecryptor::ParseYEncryption(buffer, len, m_cipher, m_salt, m_tag))
+	uint32_t parsedIndex = 0;
+	if (!YEncDecryptor::ParseYEncryption(buffer, len, m_cipher, m_salt, m_tag, parsedIndex))
 	{
 		m_authFailed = true;
+	}
+	else
+	{
+		if (m_segmentIndex == 0)
+		{
+			m_segmentIndex = parsedIndex;
+		}
+		else if (m_segmentIndex != parsedIndex)
+		{
+			m_authFailed = true;
+		}
 	}
 	m_body = true;
 }
@@ -501,6 +516,7 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 		return;
 	}
 
+	m_segmentIndex = header.segmentIndex;
 	m_encrypted = true;
 	m_cipher = header.cipher;
 	memcpy(m_salt, header.salt.data(), 16);

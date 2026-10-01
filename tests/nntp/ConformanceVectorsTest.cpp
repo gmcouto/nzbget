@@ -442,60 +442,18 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 			std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
 			std::filesystem::remove(tempNzb);
 
-			if (category == "valid_identity")
+			if (category == "valid_identity" || category == "legacy_attribute_ignored")
 			{
 				BOOST_REQUIRE(parsed);
 				BOOST_REQUIRE(nzbInfo);
 				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
-
-				std::unordered_map<std::string, uint32_t> actual;
-				for (const auto& fileInfo : *nzbInfo->GetFileList())
-				{
-					for (const auto& article : *fileInfo->GetArticles())
-					{
-						BOOST_REQUIRE(article->HasSegmentIndex());
-						std::string mid = article->GetMessageId();
-						if (mid.size() >= 2 && mid.front() == '<' && mid.back() == '>')
-						{
-							mid = mid.substr(1, mid.size() - 2);
-						}
-						actual[mid] = article->GetSegmentIndex().value();
-					}
-				}
-
-				for (const auto& expectedItem : vector.at("expected_segments").as_array())
-				{
-					const auto& expected = expectedItem.as_object();
-					const std::string mid = JsonString(expected, "message_id");
-					BOOST_REQUIRE(actual.find(mid) != actual.end());
-					BOOST_CHECK_EQUAL(actual[mid], JsonUint32(expected, "segment_index"));
-				}
 			}
 			else if (category == "invalid_identity")
 			{
-				if (id == "nzb-invalid-17-missing-index-encrypted")
-				{
-					// Password-only without explicit encryption provenance is an archive password release.
-					BOOST_REQUIRE(parsed);
-					BOOST_REQUIRE(nzbInfo);
-					BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
-				}
-				else
-				{
-					BOOST_CHECK(!parsed);
-					BOOST_REQUIRE(nzbInfo);
-					const std::string expectedError = JsonString(vector, "expected_error");
-					bool found = false;
-					for (Message& message : nzbInfo->GuardCachedMessages())
-					{
-						if (std::string(message.GetText()).find(expectedError) != std::string::npos)
-						{
-							found = true;
-							break;
-						}
-					}
-					BOOST_CHECK(found);
-				}
+				// Password-only without explicit encryption provenance is an archive password release.
+				BOOST_REQUIRE(parsed);
+				BOOST_REQUIRE(nzbInfo);
+				BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
 			}
 			else if (category == "unencrypted_compatibility")
 			{

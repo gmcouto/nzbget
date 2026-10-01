@@ -361,23 +361,23 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	m_decoder.SetRawMode(g_Options->GetRawArticle());
 
 	bool isEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || m_articleInfo->HasSegmentIndex());
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || m_fileInfo->GetNzbInfo()->HasPassword());
 	if (isEncrypted)
 	{
-		if (!m_articleInfo->HasSegmentIndex() || m_articleInfo->GetSegmentIndex().value() == 0)
-		{
-			warn("Missing explicit segmentIndex for encrypted article %s", *m_infoName);
-			status = adFailed;
-			return status;
-		}
-
 		const char* pwd = m_fileInfo->GetNzbInfo()->GetPassword();
 		if (!m_decryptor || m_decryptor->GetPassword() != pwd)
 		{
 			m_decryptor = std::make_unique<YEncDecryptor>(pwd);
 		}
 		m_decoder.SetDecryptor(m_decryptor.get());
-		m_decoder.SetSegmentIndex(m_articleInfo->GetSegmentIndex().value());
+		if (m_articleInfo && m_articleInfo->HasSegmentIndex())
+		{
+			m_decoder.SetSegmentIndex(m_articleInfo->GetSegmentIndex().value());
+		}
+		else
+		{
+			m_decoder.SetSegmentIndex(0);
+		}
 	}
 	else
 	{

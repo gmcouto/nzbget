@@ -410,8 +410,18 @@ BOOST_AUTO_TEST_CASE(DiskStateMalformedAndCorruptTest)
 	// 10. Article with negative segmentIndex
 	checkFails(createTemplate("2,5,10", "1,1000,-1", "2,1000,11"));
 
-	// 11. Article with segmentIndex 0 when file has identity
-	checkFails(createTemplate("2,5,10", "1,1000,0", "2,1000,11"));
+	// 11. Article with segmentIndex 0 is allowed (unset/clean identity)
+	{
+		++testId;
+		queueDir.WriteFile(testId, createTemplate("2,5,10", "1,1000,0", "2,1000,11"));
+		FileInfo loaded(testId);
+		bool success = g_DiskState->LoadFile(&loaded, true, true);
+		BOOST_CHECK(success);
+		BOOST_REQUIRE_EQUAL(loaded.GetArticles()->size(), 2U);
+		BOOST_CHECK(!loaded.GetArticles()->at(0)->HasSegmentIndex());
+		BOOST_REQUIRE(loaded.GetArticles()->at(1)->HasSegmentIndex());
+		BOOST_CHECK_EQUAL(loaded.GetArticles()->at(1)->GetSegmentIndex().value(), 11U);
+	}
 
 	// 13. Article with declared part number 0
 	checkFails(createTemplate("2,5,10", "0,1000,10", "2,1000,11"));

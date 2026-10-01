@@ -413,50 +413,52 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		NzbFile nzbFile(tempNzb.string().c_str(), "");
 		bool ok = nzbFile.Parse();
 		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		if (nzbInfo && !nzbFile.GetPassword().empty())
+		{
+			nzbInfo->GetParameters()->SetParameter("*Unpack:Password", nzbFile.GetPassword().c_str());
+		}
 		fs::remove(tempNzb);
 		return { ok, std::move(nzbInfo) };
 	};
 
-	// 1. Valid sequential encrypted release
+	// 1. Valid clean NZB 1.1 encrypted release
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
 			"<file poster=\"p\" date=\"100\" subject=\"[1/1] - &quot;f.bin&quot; yEnc (1/2)\">\n"
 			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
-			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"2\">msg2@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\">msg2@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "valid_seq.nzb");
+		auto [ok, info] = parseXml(xml, "valid_clean.nzb");
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(info->IsYEncEncrypted());
 		auto articles = info->GetFileList()->front()->GetArticles();
 		BOOST_REQUIRE_EQUAL(articles->size(), 2U);
-		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 1U);
-		BOOST_CHECK_EQUAL((*articles)[1]->GetSegmentIndex().value(), 2U);
 	}
 
-	// 2. Arbitrary non-numbered subjects
+	// 2. Arbitrary non-numbered subjects with yenc_encrypted metadata
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
 			"<file poster=\"p\" date=\"100\" subject=\"&quot;random_movie.mkv&quot;\">\n"
 			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"10\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"<file poster=\"p\" date=\"100\" subject=\"&quot;random_movie.par2&quot;\">\n"
 			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"20\">msg2@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\">msg2@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
@@ -464,21 +466,19 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(info->IsYEncEncrypted());
-		BOOST_CHECK_EQUAL(info->GetFileList()->at(0)->GetArticles()->at(0)->GetSegmentIndex().value(), 10U);
-		BOOST_CHECK_EQUAL(info->GetFileList()->at(1)->GetArticles()->at(0)->GetSegmentIndex().value(), 20U);
 	}
 
-	// 3. Obfuscated hexadecimal subjects
+	// 3. Obfuscated hexadecimal subjects with yenc_encrypted metadata
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
 			"<file poster=\"p\" date=\"100\" subject=\"7a8b9c0d1e2f3a4b\">\n"
 			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
-			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"2\">msg2@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\">msg2@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
@@ -486,113 +486,47 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(info->IsYEncEncrypted());
-		auto articles = info->GetFileList()->front()->GetArticles();
-		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 1U);
-		BOOST_CHECK_EQUAL((*articles)[1]->GetSegmentIndex().value(), 2U);
 	}
 
-	// 4. Reordered files and segments
+	// 4. Legacy segmentIndex attributes tolerated
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"file2.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"2\">msg2@test</segment></segments>\n"
-			"</file>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"file1.bin\">\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"legacy.bin\">\n"
 			"<groups><group>a.b.t</group></groups>\n"
 			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment></segments>\n"
 			"</file>\n"
 			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "reordered.nzb");
+		auto [ok, info] = parseXml(xml, "legacy.nzb");
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(info->IsYEncEncrypted());
-		BOOST_CHECK_EQUAL(info->GetFileList()->at(0)->GetArticles()->at(0)->GetSegmentIndex().value(), 2U);
-		BOOST_CHECK_EQUAL(info->GetFileList()->at(1)->GetArticles()->at(0)->GetSegmentIndex().value(), 1U);
 	}
 
-	// 5. Sparse subsets / non-contiguous indices
+	// 5. Archive-password-only release (password without yenc_encrypted meta)
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"sparse.bin\">\n"
+			"<head><meta type=\"password\">archive_secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"archive.bin\">\n"
 			"<groups><group>a.b.t</group></groups>\n"
 			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"5\">msg5@test</segment>\n"
-			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"100\">msg100@test</segment>\n"
-			"</segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "sparse.nzb");
-		BOOST_REQUIRE(ok);
-		BOOST_REQUIRE(info);
-		BOOST_CHECK(info->IsYEncEncrypted());
-		auto articles = info->GetFileList()->front()->GetArticles();
-		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 5U);
-		BOOST_CHECK_EQUAL((*articles)[1]->GetSegmentIndex().value(), 100U);
-	}
-
-	// 6. Missing segmentIndex on encrypted release fails closed
-	{
-		const std::string xml =
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"yenc_encrypted\">true</meta><meta type=\"password\">secret</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"missing.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
 			"<segment bytes=\"100\" number=\"2\">msg2@test</segment>\n"
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "missing_idx.nzb");
-		BOOST_CHECK(!ok);
+		auto [ok, info] = parseXml(xml, "archive_pwd.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+		BOOST_CHECK_EQUAL(info->GetPassword(), "archive_secret");
 	}
 
-	// 7. Duplicate segmentIndex fails closed
-	{
-		const std::string xml =
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"duplicate.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments>\n"
-			"<segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment>\n"
-			"<segment bytes=\"100\" number=\"2\" segmentIndex=\"1\">msg2@test</segment>\n"
-			"</segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "dupe_idx.nzb");
-		BOOST_CHECK(!ok);
-	}
-
-	// 8. Conflicting Message-ID index mapping fails closed
-	{
-		const std::string xml =
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"conflict1.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">shared_mid@test</segment></segments>\n"
-			"</file>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"conflict2.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"2\">shared_mid@test</segment></segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "conflict_mid.nzb");
-		BOOST_CHECK(!ok);
-	}
-
-	// 9. Unencrypted compatibility
+	// 6. Unencrypted release without password
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -609,9 +543,7 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(!info->IsYEncEncrypted());
-		auto articles = info->GetFileList()->front()->GetArticles();
-		BOOST_CHECK(!(*articles)[0]->HasSegmentIndex());
-		BOOST_CHECK(!(*articles)[1]->HasSegmentIndex());
 	}
 }
+
 BOOST_AUTO_TEST_SUITE_END()

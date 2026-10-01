@@ -79,8 +79,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 	m_articlePtr = 0;
 
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex())) &&
-		m_fileInfo->GetNzbInfo()->HasPassword();
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
 
 	// prepare file for writing
 	if (m_format == Decoder::efYenc)
@@ -180,8 +179,7 @@ bool ArticleWriter::GetSkipDiskWrite()
 bool ArticleWriter::Write(char* buffer, int len)
 {
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex())) &&
-		m_fileInfo->GetNzbInfo()->HasPassword();
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
 	if (isYEncEncrypted)
 	{
 		// Enforce Zero-Output Guarantee: never write unauthenticated ciphertext to disk or cache
@@ -266,8 +264,7 @@ void ArticleWriter::Finish(bool success)
 	}
 
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex())) &&
-		m_fileInfo->GetNzbInfo()->HasPassword();
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
 	bool directWrite = ((g_Options->GetDirectWrite() && !isYEncEncrypted) || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
 
 	if (!g_Options->GetRawArticle())

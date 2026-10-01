@@ -1166,8 +1166,6 @@ bool DiskState::LoadFile(FileInfo* fileInfo, bool fileSummary, bool articles)
 
 bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int formatVersion, bool fileSummary, bool articles)
 {
-	bool hasFileIdentity = false;
-
 	if (formatVersion <= 0)
 	{
 		goto error;
@@ -1224,14 +1222,12 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 
 		if (fileOrdinal == 0 && totalFiles == 0 && segmentIndexBase == 0)
 		{
-			hasFileIdentity = false;
 			fileInfo->SetFileOrdinal(std::nullopt);
 			fileInfo->SetTotalFiles(std::nullopt);
 			fileInfo->SetSegmentIndexBase(std::nullopt);
 		}
 		else if (fileOrdinal >= 1 && totalFiles >= 1 && fileOrdinal <= totalFiles && segmentIndexBase >= 1)
 		{
-			hasFileIdentity = true;
 			if (fileSummary)
 			{
 				fileInfo->SetFileOrdinal(fileOrdinal);
@@ -1351,11 +1347,6 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 
 			if (formatVersion >= 8)
 			{
-				if (hasFileIdentity && segmentIndex == 0)
-				{
-					goto error;
-				}
-
 				if (segmentIndex != 0)
 				{
 					articleInfo->SetSegmentIndex(segmentIndex);

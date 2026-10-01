@@ -384,92 +384,29 @@ bool NzbFile::ParseSegmentIndex(std::string_view valStr, uint32& outVal, std::st
 
 bool NzbFile::ValidateSegmentIdentities()
 {
-	bool anySegmentHasRawIndex = false;
+	bool isEncrypted = m_yencEncryptedMeta;
+	m_nzbInfo->SetYEncEncrypted(isEncrypted);
+
 	for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
 	{
 		for (const auto& article : *fileInfo->GetArticles())
 		{
-			if (article && article->HasRawSegmentIndex())
+			if (article)
 			{
-				anySegmentHasRawIndex = true;
-				break;
-			}
-		}
-		if (anySegmentHasRawIndex)
-		{
-			break;
-		}
-	}
-
-	bool isEncrypted = m_yencEncryptedMeta || (!m_password.empty() && anySegmentHasRawIndex);
-
-	if (isEncrypted)
-	{
-		m_nzbInfo->SetYEncEncrypted(true);
-		std::unordered_set<uint32> seenIndices;
-		std::unordered_map<std::string, uint32> seenMids;
-
-		for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
-		{
-			for (const auto& article : *fileInfo->GetArticles())
-			{
-				if (!article)
+				if (article->HasRawSegmentIndex())
 				{
-					continue;
-				}
-
-				if (!article->HasRawSegmentIndex())
-				{
-					m_nzbInfo->AddMessage(Message::mkError, "Error parsing nzb-file: MISSING_SEGMENT_INDEX");
-					return false;
-				}
-
-				uint32 segIndex = 0;
-				std::string errToken;
-				if (!ParseSegmentIndex(article->GetRawSegmentIndex(), segIndex, errToken))
-				{
-					m_nzbInfo->AddMessage(Message::mkError, BString<1024>("Error parsing nzb-file: %s", errToken.c_str()));
-					return false;
-				}
-
-				std::string mid = article->GetMessageId() ? article->GetMessageId() : "";
-				if (mid.size() >= 2 && mid.front() == '<' && mid.back() == '>')
-				{
-					mid = mid.substr(1, mid.size() - 2);
-				}
-
-				auto midIt = seenMids.find(mid);
-				if (midIt != seenMids.end())
-				{
-					if (midIt->second != segIndex)
+					uint32 segIndex = 0;
+					std::string errToken;
+					if (ParseSegmentIndex(article->GetRawSegmentIndex(), segIndex, errToken))
 					{
-						m_nzbInfo->AddMessage(Message::mkError, "Error parsing nzb-file: CONFLICTING_MESSAGE_ID_INDEX");
-						return false;
+						article->SetSegmentIndex(segIndex);
+					}
+					else
+					{
+						article->SetSegmentIndex(std::nullopt);
 					}
 				}
 				else
-				{
-					if (seenIndices.find(segIndex) != seenIndices.end())
-					{
-						m_nzbInfo->AddMessage(Message::mkError, "Error parsing nzb-file: DUPLICATE_SEGMENT_INDEX");
-						return false;
-					}
-					seenIndices.insert(segIndex);
-					seenMids[mid] = segIndex;
-				}
-
-				article->SetSegmentIndex(segIndex);
-			}
-		}
-	}
-	else
-	{
-		m_nzbInfo->SetYEncEncrypted(false);
-		for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
-		{
-			for (const auto& article : *fileInfo->GetArticles())
-			{
-				if (article)
 				{
 					article->SetSegmentIndex(std::nullopt);
 				}

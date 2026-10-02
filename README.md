@@ -63,11 +63,22 @@ More information available at https://nzbget.com
 
 ## yEnc Header and Body Decryption
 
-NZBGet supports downloading releases protected by yEnc body and control-line encryption (XChaCha20-Poly1305 and Radix 253 FF1).
+NZBGet supports downloading releases protected by yEnc body and control-line encryption
+(XChaCha20-Poly1305 and Radix 253 FF1) conforming to the experimental v1.1 Self-Describing
+Article Bootstrap Standard.
 
-- **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and `<meta type="password">` decrypt automatically without manual intervention.
-- **Manual Password Entry**: Passwords can be supplied via the web interface (Downloads -> edit item -> Password) or via the command line when appending an NZB (`nzbget -A -p "password" file.nzb`).
-- **Safe Staging**: Unauthenticated ciphertext is buffered in memory or temporary files and only committed to destination files after authentication succeeds. Authentication failures trigger server failover before failing the article.
+- **Self-Describing Article Wire Bootstrap**: Decodes the 20-byte Line 1 prefix containing the
+  16-byte raw salt and 4-byte big-endian uint32 `segmentIndex`, validating dual-bootstrap cross-header
+  agreement against the canonical 5-token `=yencryption` line before decrypting.
+- **Clean Standard NZB 1.1 Support**: Processes standard NZB 1.1 XML containing `<meta type="yenc_encrypted">true</meta>`
+  and `<meta type="password">` without custom segment attributes.
+- **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and
+  `<meta type="password">` decrypt automatically without manual intervention.
+- **Manual Password Entry**: Passwords can be supplied via the web interface (Downloads -> edit item -> Password)
+  or via the command line when appending an NZB (`nzbget -A -p "password" file.nzb`).
+- **Safe Staging**: Unauthenticated ciphertext is buffered in memory or temporary files and only committed
+  to destination files after Poly1305 authentication succeeds. Authentication failures and wire header
+  mismatches trigger server failover before failing the article.
 
 ## Contribution
 

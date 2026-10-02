@@ -75,7 +75,7 @@ Article Bootstrap Standard.
 - **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and
   `<meta type="password">` decrypt automatically without manual intervention.
 - **Manual Password Entry**: Passwords can be supplied via the web interface (Downloads -> edit item -> Password)
-  or via the command line when appending an NZB (`nzbget -A -p "password" file.nzb`).
+  or via the command line option override when appending an NZB (`nzbget -A -o "*Unpack:Password=MyPassword" file.nzb`).
 - **Safe Staging**: Unauthenticated ciphertext is buffered in memory or temporary files and only committed
   to destination files after Poly1305 authentication succeeds. Authentication failures and wire header
   mismatches trigger server failover before failing the article.

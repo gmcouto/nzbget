@@ -266,6 +266,6 @@ attributes.
 If an encrypted NZB does not contain an embedded password, you can provide the password:
 - Via Web-interface: Click on the download item in the queue, edit its properties, and set the "Password" field.
 - Via CLI when adding to queue:
-```
-nzbget -A -p "MyPassword" release.nzb
+```bash
+nzbget -A -o "*Unpack:Password=MyPassword" release.nzb
 ```

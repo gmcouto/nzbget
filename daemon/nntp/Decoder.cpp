@@ -101,7 +101,8 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 
 		if (!m_encryptedWireMode)
 		{
-			size_t nlPos = m_wireBuffer.find('\n');
+			size_t searchStart = (m_wireBuffer.size() >= 20 && m_wireBuffer.rfind("=y", 0) != 0) ? 20 : 0;
+			size_t nlPos = m_wireBuffer.find('\n', searchStart);
 			if (nlPos != std::string::npos)
 			{
 				size_t line1End = nlPos;

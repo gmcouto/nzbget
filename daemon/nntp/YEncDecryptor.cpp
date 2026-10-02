@@ -840,7 +840,8 @@ bool YEncDecryptor::RestoreControlLines(
 	const char* end = wireBlock + wireLen;
 	while (cursor < end)
 	{
-		const char* newline = static_cast<const char*>(memchr(cursor, '\n', end - cursor));
+		const char* searchStart = (lines.empty() && (end - cursor >= 20) && memcmp(cursor, "=y", 2) != 0) ? cursor + 20 : cursor;
+		const char* newline = static_cast<const char*>(memchr(searchStart, '\n', end - searchStart));
 		const char* lineEnd = newline ? newline : end;
 		const bool crlf = lineEnd > cursor && lineEnd[-1] == '\r';
 		lines.push_back({cursor, static_cast<size_t>((crlf ? lineEnd - 1 : lineEnd) - cursor),

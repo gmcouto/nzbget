@@ -546,4 +546,95 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 	}
 }
 
+BOOST_AUTO_TEST_CASE(PasswordControlCharacterSanitizationTest)
+{
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		if (nzbInfo && !nzbFile.GetPassword().empty())
+		{
+			nzbInfo->GetParameters()->SetParameter("*Unpack:Password", nzbFile.GetPassword().c_str());
+		}
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	// 1. Password in <meta> with newlines and carriage returns
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">line1\r\nline2\t</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"test.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "pwd_ctrl.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		// Util::SanitizeLine replaces control chars with space and trims
+		std::string pwd = info->GetPassword();
+		BOOST_CHECK_EQUAL(pwd.find('\r'), std::string::npos);
+		BOOST_CHECK_EQUAL(pwd.find('\n'), std::string::npos);
+		BOOST_CHECK_EQUAL(pwd, "line1 line2");
+	}
+
+	// 2. Password with leading/trailing whitespace and newlines
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">\n\r  secret_password  \r\n</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"test2.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "pwd_trim.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK_EQUAL(info->GetPassword(), "secret_password");
+	}
+}
+
+BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesMalformedAttributeTest)
+{
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> bool
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		fs::remove(tempNzb);
+		return ok;
+	};
+
+	auto createNzbWithSegIndex = [](const std::string& segIndexAttr) -> std::string
+	{
+		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"yenc_encrypted\">true</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"file.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"" + segIndexAttr + "\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+	};
+
+	// All malformed segmentIndex attributes must cause Parse() to fail (not silently swallow)
+	BOOST_CHECK(!parseXml(createNzbWithSegIndex("0"), "mal_zero.nzb"));
+	BOOST_CHECK(!parseXml(createNzbWithSegIndex("-5"), "mal_neg.nzb"));
+	BOOST_CHECK(!parseXml(createNzbWithSegIndex("invalid"), "mal_str.nzb"));
+	BOOST_CHECK(!parseXml(createNzbWithSegIndex(" 1"), "mal_space.nzb"));
+	BOOST_CHECK(!parseXml(createNzbWithSegIndex("01"), "mal_leadzero.nzb"));
+	BOOST_CHECK(!parseXml(createNzbWithSegIndex("4294967296"), "mal_overflow.nzb"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

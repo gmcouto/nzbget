@@ -515,4 +515,81 @@ BOOST_AUTO_TEST_CASE(DiskStateUnencryptedPersistenceTest)
 	BOOST_CHECK(!loadedFile.GetArticles()->front()->HasSegmentIndex());
 }
 
+BOOST_AUTO_TEST_CASE(DiskStatePartialArticleLoadUnwindTest)
+{
+	ScopedQueueDir queueDir("unwind");
+
+	// State file with 3 declared articles, where article 1 is valid, but article 2 is malformed
+	const std::string corruptContent =
+		"nzbget diskstate file version 8\n"
+		"Unwind Subject\n"
+		"unwind.bin\n"
+		"unwind.bin\n"
+		"unwind.bin\n"
+		"2,5,10\n"
+		"1,12345678\n"
+		"0,3000\n"
+		"0,0\n"
+		"0\n"
+		"2,0\n"
+		"1\n"
+		"alt.binaries.test\n"
+		"3\n"
+		"1,1000,10\n"
+		"art1@unwind.com\n"
+		"2,corrupt_size,11\n"
+		"art2@unwind.com\n"
+		"3,1000,12\n"
+		"art3@unwind.com\n";
+
+	queueDir.WriteFile(701, corruptContent);
+
+	FileInfo loaded(701);
+	bool success = g_DiskState->LoadFile(&loaded, true, true);
+	BOOST_CHECK(!success);
+	// Articles vector must be completely cleared on error, not left partially populated
+	BOOST_CHECK_EQUAL(loaded.GetArticles()->size(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(DiskStateCrlfLineEndingTest)
+{
+	ScopedQueueDir queueDir("crlf");
+
+	// Valid version 8 state file using \r\n CRLF line endings
+	const std::string crlfContent =
+		"nzbget diskstate file version 8\r\n"
+		"[1/3] - \"crlf.bin\" yEnc (1/2)\r\n"
+		"crlf.bin\r\n"
+		"crlf.bin\r\n"
+		"crlf.bin\r\n"
+		"1,3,10\r\n"
+		"1,12345678\r\n"
+		"0,2000\r\n"
+		"0,0\r\n"
+		"0\r\n"
+		"2,0\r\n"
+		"1\r\n"
+		"alt.binaries.test\r\n"
+		"2\r\n"
+		"1,1000,10\r\n"
+		"art1@crlf.com\r\n"
+		"2,1000,11\r\n"
+		"art2@crlf.com\r\n";
+
+	queueDir.WriteFile(801, crlfContent);
+
+	FileInfo loaded(801);
+	bool success = g_DiskState->LoadFile(&loaded, true, true);
+	BOOST_CHECK(success);
+	BOOST_REQUIRE(loaded.HasFileOrdinal());
+	BOOST_CHECK_EQUAL(loaded.GetFileOrdinal().value(), 1U);
+	BOOST_REQUIRE(loaded.HasTotalFiles());
+	BOOST_CHECK_EQUAL(loaded.GetTotalFiles().value(), 3U);
+	BOOST_REQUIRE(loaded.HasSegmentIndexBase());
+	BOOST_CHECK_EQUAL(loaded.GetSegmentIndexBase().value(), 10U);
+	BOOST_REQUIRE_EQUAL(loaded.GetArticles()->size(), 2U);
+	BOOST_CHECK_EQUAL(loaded.GetArticles()->at(0)->GetSegmentIndex().value(), 10U);
+	BOOST_CHECK_EQUAL(loaded.GetArticles()->at(1)->GetSegmentIndex().value(), 11U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

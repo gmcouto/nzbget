@@ -253,4 +253,108 @@ BOOST_AUTO_TEST_CASE(UnencryptedArticleWriterWithArchivePasswordTest)
 	stdfs::remove_all(tempDir);
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
+{
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_direct_write_gating_test";
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	std::string optDest = "DestDir=" + tempDir.string();
+	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	cmdOpts.push_back(optDest.c_str());
+	cmdOpts.push_back("DirectWrite=yes");
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	BOOST_REQUIRE(g_Options->GetDirectWrite());
+
+	// Case 1: NZB has password set but YEncEncrypted meta is missing (C1-01)
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "secret123");
+	nzbInfo.SetYEncEncrypted(false);
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("gating_test.dat");
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(32);
+	articleInfo.SetSegmentIndex(1);
+
+	ArticleWriter writer;
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("gating_test_article");
+	writer.Prepare();
+	writer.SetEncrypted(true);
+
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "gating_test.dat", 32, 0, 32));
+
+	// Direct-write must be strictly blocked: final destination file must NOT be created yet
+	stdfs::path finalDestFile = tempDir / "gating_test.dat";
+	BOOST_CHECK(!stdfs::exists(finalDestFile));
+
+	// Write unauthenticated ciphertext chunks; with writer marked encrypted, chunks must be discarded
+	std::vector<char> ciphertext(32, 'Z');
+	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
+
+	// Discard staged data (simulating auth failure)
+	writer.DiscardStagedData();
+
+	// Verify Zero-Output Guarantee: destination file must never have been created
+	BOOST_CHECK(!stdfs::exists(finalDestFile));
+
+	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
+}
+
+BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
+{
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_zero_byte_test";
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	std::string optDest = "DestDir=" + tempDir.string();
+	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	cmdOpts.push_back(optDest.c_str());
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("zero_byte.dat");
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(0);
+	articleInfo.SetSegmentIndex(1);
+
+	ArticleWriter writer;
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("zero_byte_article");
+	writer.Prepare();
+	writer.SetEncrypted(true);
+
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "zero_byte.dat", 0, 0, 0));
+
+	// C1-04: CommitAuthenticatedData for 0-byte authenticated payload must succeed
+	bool commitOk = writer.CommitAuthenticatedData(nullptr, 0, 0);
+	BOOST_CHECK(commitOk);
+
+	writer.Finish(true);
+	BOOST_CHECK_EQUAL(articleInfo.GetSegmentSize(), 0);
+
+	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

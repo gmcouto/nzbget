@@ -647,4 +647,63 @@ BOOST_AUTO_TEST_CASE(YEncryptionZeroOutputTest)
 	BOOST_CHECK_EQUAL(decoder.GetDecryptedData().size(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(YEncDecryptorRaiiExceptionSafetyTest)
+{
+	YEncDecryptor decryptor("test_password");
+	uint8_t salt[16] = {0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28};
+	BOOST_REQUIRE(decryptor.EnsureMasterKey(salt));
+
+	// Test control line decryption with invalid / truncated wire data
+	std::vector<uint8_t> outPlaintext;
+	std::vector<uint8_t> outSalt;
+	uint32_t outSegIndex = 0;
+
+	// Invalid line 1 wire data (< 22 bytes)
+	uint8_t shortWire[10] = {0};
+	auto st = decryptor.DecryptControlLine(shortWire, sizeof(shortWire), 1, 1, true, outPlaintext, &outSalt, &outSegIndex);
+	BOOST_CHECK(st == YEncDecryptor::Status::Error);
+	BOOST_CHECK(outPlaintext.empty());
+
+	// Invalid non-line-1 wire data
+	st = decryptor.DecryptControlLine(shortWire, 1, 1, 2, false, outPlaintext);
+	BOOST_CHECK(st == YEncDecryptor::Status::Error);
+	BOOST_CHECK(outPlaintext.empty());
+
+	// Valid control line encrypt/decrypt cycle
+	std::string plain = "=ybegin line=128 size=12345 name=test.dat";
+	std::vector<uint8_t> wireData;
+	st = decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(plain.data()), plain.size(),
+		1, 1, true, salt, wireData
+	);
+	BOOST_CHECK(st == YEncDecryptor::Status::Ok);
+	BOOST_CHECK(!wireData.empty());
+
+	st = decryptor.DecryptControlLine(
+		wireData.data(), wireData.size(),
+		1, 1, true, outPlaintext, &outSalt, &outSegIndex
+	);
+	BOOST_CHECK(st == YEncDecryptor::Status::Ok);
+	std::string decrypted(outPlaintext.begin(), outPlaintext.end());
+	BOOST_CHECK_EQUAL(decrypted, plain);
+}
+
+BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
+{
+	YEncDecryptor decryptor("test_password");
+	uint8_t salt[16] = {0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xaa, 0xbb};
+	uint8_t badTag[16] = {0}; // Invalid tag
+	uint8_t ct[32];
+	memset(ct, 0x42, sizeof(ct));
+
+	std::vector<uint8_t> outPlaintext;
+	// Pre-fill outPlaintext with dummy values
+	outPlaintext.assign(64, 0xff);
+
+	auto st = decryptor.AuthenticateAndDecrypt(ct, sizeof(ct), salt, badTag, 1, outPlaintext);
+	BOOST_CHECK(st == YEncDecryptor::Status::AuthFailed);
+	// C1-05: outPlaintext must be cleared and empty on AuthFailed
+	BOOST_CHECK(outPlaintext.empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

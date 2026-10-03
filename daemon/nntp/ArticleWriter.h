@@ -68,6 +68,9 @@ public:
 	void DiscardStagedData();
 	void Finish(bool success);
 	bool GetDuplicate() { return m_duplicate; }
+	void SetEncrypted(bool encrypted) { m_encrypted = encrypted; }
+	bool IsEncrypted() const { return m_encrypted; }
+	bool IsEncryptedRelease() const;
 	void LogStartMessage(std::string_view infoFilename, bool directWrite, bool cached);
 	std::optional<OutputPaths> SetupOutputFile(DiskFile &outfile,
 											std::string_view destDir,
@@ -112,6 +115,7 @@ private:
 	int m_articleSize;
 	int m_articlePtr;
 	bool m_duplicate = false;
+	bool m_encrypted = false;
 
 	bool CreateOutputFile(int64 size);
 	void BuildOutputFilename();

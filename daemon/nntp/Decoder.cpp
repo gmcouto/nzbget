@@ -97,6 +97,15 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	// Check if candidate for encrypted wire mode
 	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty())))
 	{
+		if (m_encryptedWireMode && m_wireBuffer.size() + static_cast<size_t>(len) > kMaxWireBufferSize)
+		{
+			m_authFailed = true;
+			m_wireBuffer.clear();
+			m_wireProcessed = true;
+			m_eof = true;
+			return 0;
+		}
+
 		m_wireBuffer.append(buffer, len);
 
 		if (!m_encryptedWireMode)
@@ -546,6 +555,11 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 
 Decoder::EStatus Decoder::Check()
 {
+	if (m_authFailed)
+	{
+		return dsAuthFailed;
+	}
+
 	if (m_encryptedWireMode && !m_wireProcessed)
 	{
 		m_eof = true;

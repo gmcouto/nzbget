@@ -528,4 +528,47 @@ BOOST_AUTO_TEST_CASE(DecoderDualBootstrapMismatchFailsClosedTest)
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedWireBufferOverflowTest)
+{
+	std::string password = "overflow_test_password";
+	std::vector<uint8_t> salt1 = HexToBytesHelper("0123456789abcdef0123456789abcdef");
+	uint32_t segmentIndex = 1;
+
+	YEncDecryptor encDec(password);
+	std::string line1Plain = "=ybegin line=128 size=1024 name=large.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt1.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line1Wire(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	line1Wire += "\r\n";
+
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+
+	// Feed line 1 to activate encrypted wire mode
+	decoder.DecodeBuffer(line1Wire.data(), static_cast<int>(line1Wire.size()));
+
+	// Now feed data chunks exceeding the 16MB ceiling (17 MB total) without terminating dot
+	std::vector<char> largeChunk(1024 * 1024, 'A');
+	for (int i = 0; i < 17; ++i)
+	{
+		decoder.DecodeBuffer(largeChunk.data(), static_cast<int>(largeChunk.size()));
+	}
+
+	// Must fail closed with dsAuthFailed on buffer ceiling overflow (C1-02)
+	auto status = decoder.Check();
+	BOOST_CHECK_EQUAL(status, Decoder::dsAuthFailed);
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
+BOOST_AUTO_TEST_CASE(DecoderAuthFailedCheckOrderTest)
+{
+	Decoder decoder;
+	decoder.SetAuthFailed(true);
+	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

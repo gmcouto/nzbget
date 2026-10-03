@@ -73,10 +73,28 @@ BOOST_AUTO_TEST_CASE(EncryptedProviderFailoverTest)
 	decoder.SetAuthFailed(true);
 	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
 
-	// Verify that Decoder::dsAuthFailed maps to adFailed
+	// Verify that Decoder::dsAuthFailed maps to adNotFound (triggering multi-server failover)
 	ArticleDownloader::EStatus mappedStatus = (decoder.Check() == Decoder::dsAuthFailed) ?
-		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
-	BOOST_CHECK_EQUAL(static_cast<int>(mappedStatus), static_cast<int>(ArticleDownloader::adFailed));
+		ArticleDownloader::adNotFound : ArticleDownloader::adFinished;
+	BOOST_CHECK_EQUAL(static_cast<int>(mappedStatus), static_cast<int>(ArticleDownloader::adNotFound));
+}
+
+BOOST_AUTO_TEST_CASE(CorruptedLine1BootstrapFailClosedTest)
+{
+	Decoder decoder;
+	decoder.SetPassword("test123");
+
+	// Corrupted line 1 that does not begin with =ybegin and cannot be decrypted as FF1 control line
+	std::string corruptedArticle =
+		"4b376d5839704c32715238764e34775a99999999CORRUPT_LINE_ONE_DATA\r\n"
+		"=ypart line=1 size=10\r\n"
+		"data\r\n"
+		"=yend size=4\r\n.\r\n";
+
+	decoder.DecodeBuffer(corruptedArticle.data(), static_cast<int>(corruptedArticle.size()));
+	Decoder::EStatus checkStatus = decoder.Check();
+	BOOST_CHECK_EQUAL(static_cast<int>(checkStatus), static_cast<int>(Decoder::dsAuthFailed));
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
 BOOST_AUTO_TEST_CASE(EncryptedProviderSecretLoggingAuditTest)

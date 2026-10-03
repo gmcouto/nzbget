@@ -357,4 +357,13 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 	stdfs::remove_all(tempDir);
 }
 
+BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
+{
+	ArticleWriter writer;
+	BOOST_CHECK(writer.GetCachedData() == nullptr);
+
+	writer.DiscardStagedData();
+	BOOST_CHECK(writer.GetCachedData() == nullptr);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

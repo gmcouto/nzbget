@@ -68,6 +68,7 @@ public:
 	void DiscardStagedData();
 	void Finish(bool success);
 	bool GetDuplicate() { return m_duplicate; }
+	char* GetCachedData() { return m_articleData.GetData(); }
 	void SetEncrypted(bool encrypted) { m_encrypted = encrypted; }
 	bool IsEncrypted() const { return m_encrypted; }
 	bool IsEncryptedRelease() const;

@@ -85,16 +85,20 @@ char* StateDiskFile::ReadLine(char* buffer, int64 size)
 		return nullptr;
 	}
 
-	// remove traling '\n'
+	// remove traling '\n' and '\r'
 	if (*buffer)
 	{
-		if (buffer[strlen(buffer) - 1] != '\n')
+		size_t len = strlen(buffer);
+		if (buffer[len - 1] != '\n')
 		{
 			// the line is longer than "size", scroll file position to the end of the line
 			for (char skipbuf[1024]; DiskFile::ReadLine(skipbuf, 1024) && *skipbuf && skipbuf[strlen(skipbuf) - 1] != '\n'; ) ;
 		}
 
-		buffer[strlen(buffer) - 1] = 0;
+		while (len > 0 && (buffer[len - 1] == '\n' || buffer[len - 1] == '\r'))
+		{
+			buffer[--len] = 0;
+		}
 	}
 
 	return buffer;
@@ -1368,6 +1372,10 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 	return true;
 
 error:
+	if (articles)
+	{
+		fileInfo->GetArticles()->clear();
+	}
 	error("Error reading diskstate for file %i", fileInfo->GetId());
 	return false;
 }

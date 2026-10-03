@@ -403,7 +403,8 @@ bool NzbFile::ValidateSegmentIdentities()
 					}
 					else
 					{
-						article->SetSegmentIndex(std::nullopt);
+						m_nzbInfo->AddMessage(Message::mkError, BString<1024>("Error parsing nzb-file: %s", errToken.c_str()));
+						return false;
 					}
 				}
 				else
@@ -482,6 +483,7 @@ bool NzbFile::ProcessFiles()
 	// Sanitize control characters (\r, \n, \t, etc.) to prevent
 	// line desynchronization in the line-based DiskState file format.
 	Util::SanitizeLine(m_category);
+	Util::SanitizeLine(m_password);
 
 	if (!m_metaName.empty() && m_nzbInfo)
 	{
@@ -504,7 +506,10 @@ void NzbFile::ReadPasswordFromFilename()
 	if (end == std::string::npos) return;
 
 	if (start < end)
-	    m_password = m_fileName.substr(start, end - start);
+	{
+		m_password = m_fileName.substr(start, end - start);
+		Util::SanitizeLine(m_password);
+	}
 }
 
 bool NzbFile::Parse()
@@ -560,7 +565,7 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			return;
 		}
 
-		for (int i = 0; atts[i]; i += 2)
+		for (int i = 0; atts[i] && atts[i + 1]; i += 2)
 		{
 			const char* attrname = atts[i];
 			const char* attrvalue = atts[i + 1];
@@ -575,7 +580,7 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 					m_fileInfo->SetTotalFiles(totalFiles);
 				}
 			}
-			if (!strcmp("date", attrname))
+			if (!strcmp("date", attrname) && attrvalue)
 			{
 				m_fileInfo->SetTime(atoi(attrvalue));
 			}
@@ -599,15 +604,15 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 		int partNumber = -1;
 		const char* rawSegmentIndex = nullptr;
 
-		for (int i = 0; atts[i]; i += 2)
+		for (int i = 0; atts[i] && atts[i + 1]; i += 2)
 		{
 			const char* attrname = atts[i];
 			const char* attrvalue = atts[i + 1];
-			if (!strcmp("bytes", attrname))
+			if (!strcmp("bytes", attrname) && attrvalue)
 			{
 				lsize = atol(attrvalue);
 			}
-			if (!strcmp("number", attrname))
+			if (!strcmp("number", attrname) && attrvalue)
 			{
 				partNumber = atol(attrvalue);
 			}
@@ -693,6 +698,7 @@ void NzbFile::Parse_EndElement(const char *name)
 	else if (!strcmp("meta", name) && m_hasPassword)
 	{
 		m_password = m_tagContent;
+		Util::SanitizeLine(m_password);
 	}
 	else if (!strcmp("meta", name) && m_hasCategory)
 	{

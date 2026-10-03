@@ -52,6 +52,8 @@ public:
 		efUx,
 	};
 
+	static constexpr size_t kMaxWireBufferSize = 16 * 1024 * 1024; // 16 MB maximum wire buffer
+
 	Decoder();
 	~Decoder();
 	EStatus Check();

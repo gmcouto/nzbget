@@ -526,6 +526,8 @@ bool ArticleDownloader::Write(char* buffer, int len)
 			}
 		}
 
+		m_articleWriter.SetEncrypted(m_decoder.IsEncrypted() ||
+			(m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->IsYEncEncrypted()));
 		if (!m_articleWriter.Start(m_decoder.GetFormat(), articleFilename, articleFileSize, articleOffset, articleSize))
 		{
 			return false;
@@ -562,13 +564,14 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 					m_decoder.GetCalculatedCrc() : m_decoder.GetExpectedCrc());
 			}
 
-			bool isEncrypted = m_decoder.IsEncrypted() && !m_decoder.GetDecryptedData().empty();
+			bool isEncrypted = m_decoder.IsEncrypted();
 			if (isEncrypted)
 			{
 				int64 articleFileSize = m_decoder.GetSize();
 				int64 articleOffset = m_decoder.GetBeginPos() > 0 ? m_decoder.GetBeginPos() - 1 : 0;
 				int articleSize = static_cast<int>(m_decoder.GetDecryptedData().size());
 
+				m_articleWriter.SetEncrypted(true);
 				if (!m_articleWriter.Start(m_decoder.GetFormat(), m_decoder.GetArticleFilename(),
 					articleFileSize, articleOffset, articleSize))
 				{

@@ -148,7 +148,11 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 					}
 					else
 					{
-						m_encryptedWireMode = false;
+						m_authFailed = true;
+						m_wireBuffer.clear();
+						m_wireProcessed = true;
+						m_eof = true;
+						return 0;
 					}
 				}
 

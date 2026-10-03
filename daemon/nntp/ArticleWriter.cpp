@@ -257,6 +257,7 @@ void ArticleWriter::DiscardStagedData()
 		FileSystem::DeleteFile(m_resultFilename.c_str());
 	}
 	m_articlePtr = 0;
+	m_articleData = CachedSegmentData();
 }
 
 void ArticleWriter::Finish(bool success)
@@ -270,6 +271,7 @@ void ArticleWriter::Finish(bool success)
 			FileSystem::DeleteFile(m_tempFilename.c_str());
 			FileSystem::DeleteFile(m_resultFilename.c_str());
 		}
+		m_articleData = CachedSegmentData();
 		return;
 	}
 

@@ -1,0 +1,63 @@
+version: 2
+secret:
+  ignored_matches:
+    # ── Upstream-documented default control password (D-03: suppression, never
+    #    renaming — renaming breaks Options.cpp defaults and SecurityValidator
+    #    insecure-default checks; public in upstream docs since 2013) ──
+    - name: upstream-default-control-password
+      match: tegbzn6789
+    # ── nzbget.conf sample config dummy values ──
+    - name: sample-config-server-password
+      match: Server1.Password=pass
+    - name: sample-config-commented-server-password
+      match: Server2.Password=mypass
+    - name: sample-config-commented-server-password2
+      match: Server3.Password=mypass2
+    # ── C++ unit/functional test dummy passwords ──
+    - name: test-fixture-password-literal
+      match: SuperSecretAuditPassword999
+    - name: test-fixture-nzb-embedded-password
+      match: thisisthepassword
+    - name: test-fixture-rar-password
+      match: SetPassword("123")
+    - name: test-password-test123
+      match: test123
+    - name: test-password-overflow
+      match: overflow_test_password
+    - name: test-password-wrong-control
+      match: wrong_control_password
+    # ── test-vector JSON passwords (files are frozen/integrity-checked —
+    #    per-literal matches, never modification) ──
+    - name: test-vector-wrong-password
+      match: wrong_password_999
+    - name: test-vector-spaces-symbols-password
+      match: P@ssw0rd with spaces & symbols!#$%
+    - name: test-vector-unicode-emoji-password
+      match: Mötörhëad-Usenet-🔑-2026
+    - name: test-vector-132char-alphabet-password
+      match: A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4
+    # ── deterministic 64-hex KDF/AEAD digests in tests (conformance constants,
+    #    not secrets) — per-literal for literals embedded in C++ test sources;
+    #    test-vectors JSON is additionally path-suppressed below ──
+    - name: test-deterministic-body-key-hex
+      match: 5dd5a3371f80a50eb96feb11787dd4567a09b55655aa3c2b1596bf2d45c9a6d7
+    - name: test-deterministic-control-key-hex
+      match: ad675564c3a679ff633bd2503f24209903fc440818c7ae39c7646df91857fb93
+    - name: test-deterministic-master-key-hex
+      match: de3bfc39034371d589b34d485c572c12ce2ac6d4464adaea47fc1fb1e0fbfbd3
+    - name: test-deterministic-spaces-password-key-hex
+      match: f3b358755d7036115673c2e1af1d5fc7052c8861e331bece7ec9908863e1407b
+    - name: test-deterministic-unicode-password-key-hex
+      match: 8bceca5d02e6a8c87fd0de85da52e34657f1a60eb181883aa447c1ef0c40e283
+    - name: test-deterministic-132char-password-key-hex
+      match: 1743d4b5614edb4e0aac20e9a74474fd3d2fe84f20cc4093369b9fe2a1546b7a
+    - name: test-deterministic-single-char-key-hex
+      match: 32876118c269f03f6fe51d63ace5918555d8218e08cea87af262aca9c9064cfd
+    - name: test-decoder-tampered-ciphertext-hex
+      match: 6b0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28
+    - name: test-decoder-ciphertext-hex
+      match: 6a0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28
+  ignored_paths:
+    - "**/tests/**"
+    - "**/test-vectors/**"
+    - "webui/lib/**"

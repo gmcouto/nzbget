@@ -1,13 +1,15 @@
 import os
 import shutil
+import subprocess
 import pytest
 
 
 @pytest.fixture(scope='session', autouse=True)
-def prepare_testdata(request, check_config, generate_nzbs):
+def prepare_testdata(request, check_config):
 	print('Preparing test data for "parcheck"')
 
 	nserv_datadir = request.config.getini('nserv_datadir')
+	nzbget_bin = request.config.getini('nzbget_bin')
 
 	if not os.path.exists(nserv_datadir):
 		print('Creating nserv datadir')
@@ -21,4 +23,5 @@ def prepare_testdata(request, check_config, generate_nzbs):
 	if not os.path.exists(nserv_datadir + '/parchecker2'):
 		shutil.copytree(testdata_dir +'/parchecker2', nserv_datadir + '/parchecker2')
 
-	generate_nzbs(['parchecker', 'parchecker2'], 3000)
+	if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '3000', '-q']):
+		pytest.exit('Test file generation failed')

@@ -4,10 +4,11 @@ import pytest
 
 
 @pytest.fixture(scope='session', autouse=True)
-def prepare_testdata(request, check_config, generate_nzbs):
+def prepare_testdata(request, check_config):
 	print('Preparing test data for "unpack"')
 
 	nserv_datadir = request.config.getini('nserv_datadir')
+	nzbget_bin = request.config.getini('nzbget_bin')
 	sevenzip_bin = request.config.getini('sevenzip_bin')
 	par2_bin = request.config.getini('par2_bin')
 
@@ -15,7 +16,7 @@ def prepare_testdata(request, check_config, generate_nzbs):
 		print('Creating nserv datadir')
 		os.makedirs(nserv_datadir)
 
-	if not os.path.exists(nserv_datadir + '/unpack-damaged'):
+	if not os.path.exists(nserv_datadir + '/unpack-damaged.nzb'):
 		create_test_file(nserv_datadir + '/unpack-damaged', sevenzip_bin, 3, 1)
 		os.chdir(nserv_datadir + '/unpack-damaged')
 
@@ -27,7 +28,7 @@ def prepare_testdata(request, check_config, generate_nzbs):
 		outf.write(b"\x0a\x1b\x2c")
 		outf.close()
 
-	if not os.path.exists(nserv_datadir + '/unpackcrc-par'):
+	if not os.path.exists(nserv_datadir + '/unpackcrc-par.nzb'):
 		create_test_file(nserv_datadir + '/unpackcrc-par', sevenzip_bin, 3, 1)
 		os.chdir(nserv_datadir + '/unpackcrc-par')
 
@@ -39,7 +40,7 @@ def prepare_testdata(request, check_config, generate_nzbs):
 		if 0 != subprocess.call([par2_bin, 'c', '-b100', 'unpackcrc-par.par2', '*']):
 			pytest.exit('Test file generation failed')
 
-	if not os.path.exists(nserv_datadir + '/unpackcrc-nopar'):
+	if not os.path.exists(nserv_datadir + '/unpackcrc-nopar.nzb'):
 		create_test_file(nserv_datadir + '/unpackcrc-nopar', sevenzip_bin, 3, 1)
 		os.chdir(nserv_datadir + '/unpackcrc-nopar')
 
@@ -48,7 +49,8 @@ def prepare_testdata(request, check_config, generate_nzbs):
 		outf.write(b"\x0a\x1b\x2c")
 		outf.close()
 
-	generate_nzbs(['unpack-damaged', 'unpackcrc-par', 'unpackcrc-nopar'], 3000)
+	if 0 != subprocess.call([nzbget_bin, '--nserv', '-d', nserv_datadir, '-v', '2', '-z', '3000', '-q']):
+		pytest.exit('Test file generation failed')
 
 
 def create_test_file(bigdir, sevenzip_bin, sizemb, partmb):

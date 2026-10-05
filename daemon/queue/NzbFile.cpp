@@ -482,6 +482,11 @@ bool NzbFile::ValidateSegmentIdentities()
 
 bool NzbFile::ProcessFiles()
 {
+	if (m_password.empty())
+	{
+		ReadPasswordFromFilename();
+	}
+
 	if (!ValidateSegmentIdentities())
 	{
 		return false;
@@ -773,7 +778,7 @@ void NzbFile::Parse_EndElement(const char *name)
 	{
 		std::string val = *m_tagContent;
 		Util::Trim(val);
-		if (!strcasecmp(val.c_str(), "true") || !strcasecmp(val.c_str(), "yes") || val == "1")
+		if (val == "true")
 		{
 			m_yencEncryptedMeta = true;
 		}

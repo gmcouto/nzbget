@@ -528,4 +528,106 @@ BOOST_AUTO_TEST_CASE(DecoderMissingSegmentIndexFailsClosedTest)
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
+BOOST_AUTO_TEST_CASE(DecoderWireBufferCeilingTest)
+{
+	std::string password = "test123";
+	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	uint32_t segmentIndex = 1;
+
+	YEncDecryptor encDec(password);
+	std::string line1Plain = "=ybegin line=128 size=16 name=ceiling_test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+	decoder.SetSegmentIndex(segmentIndex);
+
+	std::string headerChunk(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	headerChunk += "\r\n";
+	decoder.DecodeBuffer(headerChunk.data(), static_cast<int>(headerChunk.size()));
+
+	// Feed chunks exceeding 16 MiB without a dot terminator
+	std::string junkChunk(1024 * 1024, 'A'); // 1 MiB chunk
+	for (int i = 0; i < 17; ++i)
+	{
+		decoder.DecodeBuffer(junkChunk.data(), static_cast<int>(junkChunk.size()));
+	}
+
+	auto checkStatus = decoder.Check();
+	BOOST_CHECK_EQUAL(static_cast<int>(checkStatus), static_cast<int>(Decoder::dsAuthFailed));
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
+BOOST_AUTO_TEST_CASE(DecoderZeroLengthPayloadTest)
+{
+	std::string password = "test123";
+	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	uint32_t segmentIndex = 1;
+
+	// Encrypt 0-byte plaintext
+	YEncDecryptor encDec(password);
+	std::vector<uint8_t> emptyPlain;
+	uint8_t nonce[24];
+	BOOST_REQUIRE(encDec.EnsureMasterKey(salt.data()));
+	BOOST_REQUIRE(encDec.DeriveBodyNonce(segmentIndex, nonce));
+
+	uint8_t tag[16];
+	unsigned long long clen = 0;
+	std::vector<uint8_t> ctAndTag(16);
+	crypto_aead_xchacha20poly1305_ietf_encrypt(
+		ctAndTag.data(), &clen,
+		nullptr, 0,
+		nullptr, 0,
+		nullptr,
+		nonce, encDec.GetMasterKey()
+	);
+	memcpy(tag, ctAndTag.data(), 16);
+
+	std::string line1Plain = "=ybegin line=128 size=0 name=empty.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=" +
+		BytesToHexHelper(salt.data(), 16) + " tag=" + BytesToHexHelper(tag, 16);
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line3Plain = "=yend size=0 crc32=00000000";
+	std::vector<uint8_t> wireLine3;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line3Plain.data()), line3Plain.size(),
+		segmentIndex, 3, false, salt.data(), wireLine3
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine3.data()), wireLine3.size());
+	fullWire.append("\r\n.\r\n");
+
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+	decoder.SetSegmentIndex(segmentIndex);
+	decoder.SetCrcCheck(false);
+
+	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+
+	auto status = decoder.Check();
+	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(Decoder::dsFinished));
+	BOOST_CHECK(decoder.IsEncrypted());
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

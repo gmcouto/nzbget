@@ -253,4 +253,60 @@ BOOST_AUTO_TEST_CASE(UnencryptedArticleWriterWithArchivePasswordTest)
 	stdfs::remove_all(tempDir);
 }
 
+BOOST_AUTO_TEST_CASE(ForceDirectWriteEncryptedRejectionTest)
+{
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_test_force_direct_write";
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	std::string optDest = "DestDir=" + tempDir.string();
+	std::string optDirect = "DirectWrite=yes";
+	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	cmdOpts.push_back(optDest.c_str());
+	cmdOpts.push_back(optDirect.c_str());
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "test123");
+	nzbInfo.SetYEncEncrypted(true);
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("force_dw_test.dat");
+	fileInfo.SetForceDirectWrite(true); // Attempt to force direct-write
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(32);
+	articleInfo.SetSegmentIndex(1);
+
+	ArticleWriter writer;
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("force_dw_test_article");
+	writer.Prepare();
+
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "force_dw_test.dat", 32, 0, 32));
+
+	// Even with ForceDirectWrite=true, direct-write must remain disabled for encrypted release
+	stdfs::path destFile = tempDir / "force_dw_test.dat";
+	BOOST_CHECK(!stdfs::exists(destFile));
+
+	// Writing unauthenticated ciphertext must be discarded
+	std::vector<char> ciphertext(32, 0x55);
+	bool writeOk = writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size()));
+	BOOST_CHECK(writeOk);
+	BOOST_CHECK(!stdfs::exists(destFile));
+
+	// Finish without authenticated commit must leave no destination file
+	writer.Finish(true);
+	BOOST_CHECK(!stdfs::exists(destFile));
+
+	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

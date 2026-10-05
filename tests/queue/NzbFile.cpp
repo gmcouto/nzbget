@@ -613,5 +613,67 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		BOOST_CHECK(!(*articles)[0]->HasSegmentIndex());
 		BOOST_CHECK(!(*articles)[1]->HasSegmentIndex());
 	}
+
+	// 10. Exact provenance value test (FINDING-32-01: only "true" activates provenance)
+	{
+		const std::string xmlYes =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"yenc_encrypted\">yes</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"yes.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [okYes, infoYes] = parseXml(xmlYes, "provenance_yes.nzb");
+		BOOST_REQUIRE(okYes);
+		BOOST_REQUIRE(infoYes);
+		BOOST_CHECK(!infoYes->IsYEncEncrypted());
+
+		const std::string xmlOne =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"yenc_encrypted\">1</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"one.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [okOne, infoOne] = parseXml(xmlOne, "provenance_one.nzb");
+		BOOST_REQUIRE(okOne);
+		BOOST_REQUIRE(infoOne);
+		BOOST_CHECK(!infoOne->IsYEncEncrypted());
+	}
+
+	// 11. Boundary uint32 segmentIndex tests (GAP-32-01)
+	{
+		const std::string xmlMax =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"yenc_encrypted\">true</meta><meta type=\"password\">p</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"max.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"4294967295\">max_mid@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [okMax, infoMax] = parseXml(xmlMax, "boundary_max.nzb");
+		BOOST_REQUIRE(okMax);
+		BOOST_REQUIRE(infoMax);
+		BOOST_CHECK(infoMax->IsYEncEncrypted());
+		auto articles = infoMax->GetFileList()->front()->GetArticles();
+		BOOST_CHECK_EQUAL((*articles)[0]->GetSegmentIndex().value(), 4294967295U);
+
+		const std::string xmlOverflow =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"yenc_encrypted\">true</meta><meta type=\"password\">p</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"overflow.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"4294967296\">overflow_mid@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [okOverflow, infoOverflow] = parseXml(xmlOverflow, "boundary_overflow.nzb");
+		BOOST_CHECK(!okOverflow);
+	}
 }
 BOOST_AUTO_TEST_SUITE_END()

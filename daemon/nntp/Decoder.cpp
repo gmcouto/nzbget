@@ -72,7 +72,11 @@ void Decoder::Clear()
 	memset(m_salt, 0, sizeof(m_salt));
 	memset(m_tag, 0, sizeof(m_tag));
 	m_cipherPayload.clear();
-	m_decryptedPlaintext.clear();
+	if (!m_decryptedPlaintext.empty())
+	{
+		sodium_memzero(m_decryptedPlaintext.data(), m_decryptedPlaintext.size());
+		m_decryptedPlaintext.clear();
+	}
 	m_encryptedWireMode = false;
 	m_wireProcessed = false;
 	m_wireBuffer.clear();
@@ -97,6 +101,13 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	// Check if candidate for encrypted wire mode
 	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty() && m_segmentIndex > 0)))
 	{
+		if (m_wireBuffer.size() + len > MAX_ENCRYPTED_WIRE_ARTICLE_SIZE)
+		{
+			m_authFailed = true;
+			m_wireBuffer.clear();
+			m_encryptedWireMode = false;
+			return 0;
+		}
 		m_wireBuffer.append(buffer, len);
 
 		if (!m_encryptedWireMode)

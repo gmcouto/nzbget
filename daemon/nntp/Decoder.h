@@ -139,6 +139,8 @@ private:
 	std::vector<uint8_t> m_cipherPayload;
 	std::vector<uint8_t> m_decryptedPlaintext;
 
+	static constexpr size_t MAX_ENCRYPTED_WIRE_ARTICLE_SIZE = 16 * 1024 * 1024;
+
 	bool m_encryptedWireMode = false;
 	bool m_wireProcessed = false;
 	std::string m_wireBuffer;

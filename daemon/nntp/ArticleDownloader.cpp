@@ -562,7 +562,7 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 					m_decoder.GetCalculatedCrc() : m_decoder.GetExpectedCrc());
 			}
 
-			bool isEncrypted = m_decoder.IsEncrypted() && !m_decoder.GetDecryptedData().empty();
+			bool isEncrypted = m_decoder.IsEncrypted();
 			if (isEncrypted)
 			{
 				int64 articleFileSize = m_decoder.GetSize();

@@ -613,4 +613,54 @@ BOOST_AUTO_TEST_CASE(YEncryptionZeroOutputTest)
 	BOOST_CHECK_EQUAL(decoder.GetDecryptedData().size(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(RestoreControlLinesMixedLineEndingsTest)
+{
+	YEncDecryptor decryptor("test123");
+	std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	uint32_t segmentIndex = 1;
+
+	std::string line1Plain = "=ybegin line=128 size=18 name=file.bin";
+	std::vector<uint8_t> wire1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wire1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::vector<uint8_t> wire2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wire2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string dataLine = "dGVzdCBkYXRhIGxpbmU=";
+
+	std::string line4Plain = "=yend size=18 part=1 pcrc32=12345678";
+	std::vector<uint8_t> wire4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+		segmentIndex, 4, false, salt.data(), wire4
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	// Construct wire block with mixed line endings: line1 has \n, line2 has \r\n, dataLine has \n, line4 has \r\n
+	std::string mixedWire;
+	mixedWire.append(reinterpret_cast<const char*>(wire1.data()), wire1.size());
+	mixedWire.append("\n"); // LF
+	mixedWire.append(reinterpret_cast<const char*>(wire2.data()), wire2.size());
+	mixedWire.append("\r\n"); // CRLF
+	mixedWire.append(dataLine);
+	mixedWire.append("\n"); // LF
+	mixedWire.append(reinterpret_cast<const char*>(wire4.data()), wire4.size());
+	mixedWire.append("\r\n.\r\n"); // CRLF with dot terminator
+
+	std::string cleanBlock;
+	std::vector<uint8_t> outSalt;
+	YEncDecryptor::YEncryptionHeader header;
+	bool ok = decryptor.RestoreControlLines(mixedWire.data(), mixedWire.size(), segmentIndex, cleanBlock, outSalt, &header);
+	BOOST_REQUIRE(ok);
+	BOOST_CHECK_EQUAL(header.cipher, "XChaCha20-Poly1305");
+	BOOST_CHECK(cleanBlock.find("=ybegin ") != std::string::npos);
+	BOOST_CHECK(cleanBlock.find("=yend ") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

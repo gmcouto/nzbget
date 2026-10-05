@@ -79,8 +79,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 	m_articlePtr = 0;
 
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex())) &&
-		m_fileInfo->GetNzbInfo()->HasPassword();
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex()));
 
 	// prepare file for writing
 	if (m_format == Decoder::efYenc)
@@ -180,8 +179,7 @@ bool ArticleWriter::GetSkipDiskWrite()
 bool ArticleWriter::Write(char* buffer, int len)
 {
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex())) &&
-		m_fileInfo->GetNzbInfo()->HasPassword();
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex()));
 	if (isYEncEncrypted)
 	{
 		// Enforce Zero-Output Guarantee: never write unauthenticated ciphertext to disk or cache
@@ -266,9 +264,8 @@ void ArticleWriter::Finish(bool success)
 	}
 
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex())) &&
-		m_fileInfo->GetNzbInfo()->HasPassword();
-	bool directWrite = ((g_Options->GetDirectWrite() && !isYEncEncrypted) || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex()));
+	bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
 
 	if (!g_Options->GetRawArticle())
 	{
@@ -409,8 +406,8 @@ void ArticleWriter::CompleteFileParts()
 
 	// 1. Gather context & configuration
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		m_fileInfo->GetNzbInfo()->IsYEncEncrypted() && m_fileInfo->GetNzbInfo()->HasPassword();
-	bool directWrite = ((g_Options->GetDirectWrite() && !isYEncEncrypted) || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex()));
+	bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
 	bool cached = m_fileInfo->GetCachedArticles() > 0;
 
 	std::string nzbDestDir;
@@ -802,7 +799,7 @@ void ArticleWriter::FlushCache()
 	detail("Flushing cache for %s", m_infoName.c_str());
 
 	bool isYEncEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		m_fileInfo->GetNzbInfo()->IsYEncEncrypted() && m_fileInfo->GetNzbInfo()->HasPassword();
+		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || (m_articleInfo && m_articleInfo->HasSegmentIndex()));
 	bool directWrite = g_Options->GetDirectWrite() && !isYEncEncrypted && m_fileInfo->GetOutputInitialized();
 	DiskFile outfile;
 	bool needBufFile = false;

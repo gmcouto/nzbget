@@ -65,7 +65,9 @@ static void NumRadix(const std::vector<uint8_t>& numerals, int radix, BIGNUM* ou
 static std::vector<uint8_t> StrRadix(const BIGNUM* inBn, int radix, int m, BN_CTX* ctx)
 {
 	std::vector<uint8_t> res(m, 0);
+	if (!inBn) return res;
 	BIGNUM* val = BN_dup(inBn);
+	if (!val) return res;
 	for (int i = 0; i < m; ++i)
 	{
 		BN_ULONG rem = BN_div_word(val, radix);
@@ -103,10 +105,19 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	int radix = 253)
 {
 	EVP_CIPHER_CTX* aesCtx = EVP_CIPHER_CTX_new();
+	if (!aesCtx)
+	{
+		throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+	}
 	EVP_EncryptInit_ex(aesCtx, EVP_aes_256_ecb(), nullptr, key, nullptr);
 	EVP_CIPHER_CTX_set_padding(aesCtx, 0);
 
 	BN_CTX* bnCtx = BN_CTX_new();
+	if (!bnCtx)
+	{
+		EVP_CIPHER_CTX_free(aesCtx);
+		throw std::runtime_error("BN_CTX_new failed");
+	}
 	BN_CTX_start(bnCtx);
 
 	int n = static_cast<int>(numerals.size());
@@ -140,6 +151,14 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	BIGNUM* bnMod = BN_CTX_get(bnCtx);
 	BIGNUM* bnRadix = BN_CTX_get(bnCtx);
 	BIGNUM* bnC = BN_CTX_get(bnCtx);
+	BIGNUM* bnM = BN_CTX_get(bnCtx);
+	if (!bnNumA || !bnNumB || !bnY || !bnMod || !bnRadix || !bnC || !bnM)
+	{
+		BN_CTX_end(bnCtx);
+		BN_CTX_free(bnCtx);
+		EVP_CIPHER_CTX_free(aesCtx);
+		throw std::runtime_error("BN_CTX_get failed");
+	}
 	BN_set_word(bnRadix, radix);
 
 	for (int roundIdx = 0; roundIdx < 10; ++roundIdx)
@@ -178,7 +197,6 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 		BN_bin2bn(S.data(), d, bnY);
 		int m = (i % 2 == 0) ? u : v;
 
-		BIGNUM* bnM = BN_CTX_get(bnCtx);
 		BN_set_word(bnM, m);
 		BN_exp(bnMod, bnRadix, bnM, bnCtx);
 
@@ -208,10 +226,19 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 	int radix = 253)
 {
 	EVP_CIPHER_CTX* aesCtx = EVP_CIPHER_CTX_new();
+	if (!aesCtx)
+	{
+		throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+	}
 	EVP_EncryptInit_ex(aesCtx, EVP_aes_256_ecb(), nullptr, key, nullptr);
 	EVP_CIPHER_CTX_set_padding(aesCtx, 0);
 
 	BN_CTX* bnCtx = BN_CTX_new();
+	if (!bnCtx)
+	{
+		EVP_CIPHER_CTX_free(aesCtx);
+		throw std::runtime_error("BN_CTX_new failed");
+	}
 	BN_CTX_start(bnCtx);
 
 	int n = static_cast<int>(numerals.size());
@@ -245,6 +272,14 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 	BIGNUM* bnMod = BN_CTX_get(bnCtx);
 	BIGNUM* bnRadix = BN_CTX_get(bnCtx);
 	BIGNUM* bnC = BN_CTX_get(bnCtx);
+	BIGNUM* bnM = BN_CTX_get(bnCtx);
+	if (!bnNumA || !bnNumB || !bnY || !bnMod || !bnRadix || !bnC || !bnM)
+	{
+		BN_CTX_end(bnCtx);
+		BN_CTX_free(bnCtx);
+		EVP_CIPHER_CTX_free(aesCtx);
+		throw std::runtime_error("BN_CTX_get failed");
+	}
 	BN_set_word(bnRadix, radix);
 
 	for (int i = 0; i < 10; ++i)
@@ -282,7 +317,6 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 		BN_bin2bn(S.data(), d, bnY);
 		int m = (i % 2 == 0) ? u : v;
 
-		BIGNUM* bnM = BN_CTX_get(bnCtx);
 		BN_set_word(bnM, m);
 		BN_exp(bnMod, bnRadix, bnM, bnCtx);
 
@@ -385,6 +419,11 @@ YEncDecryptor::YEncDecryptor(const std::string& password)
 YEncDecryptor::~YEncDecryptor()
 {
 	ClearMasterKey();
+	if (!m_password.empty())
+	{
+		sodium_memzero(m_password.data(), m_password.size());
+		m_password.clear();
+	}
 }
 
 void YEncDecryptor::ClearMasterKey()
@@ -399,6 +438,10 @@ void YEncDecryptor::ClearMasterKey()
 
 void YEncDecryptor::SetPassword(const std::string& password)
 {
+	if (!m_password.empty())
+	{
+		sodium_memzero(m_password.data(), m_password.size());
+	}
 	m_password = password;
 	ClearMasterKey();
 }

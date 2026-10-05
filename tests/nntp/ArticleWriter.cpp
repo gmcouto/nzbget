@@ -359,11 +359,20 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 
 BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
 {
+	// DiscardStagedData consults GetSkipDiskWrite(), which reads g_Options;
+	// install a minimal Options fixture like the neighboring tests do.
+	Options::CmdOptList cmdOpts;
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
 	ArticleWriter writer;
 	BOOST_CHECK(writer.GetCachedData() == nullptr);
 
 	writer.DiscardStagedData();
 	BOOST_CHECK(writer.GetCachedData() == nullptr);
+
+	g_Options = oldOptions;
 }
 
 BOOST_AUTO_TEST_SUITE_END()

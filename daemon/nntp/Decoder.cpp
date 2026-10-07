@@ -68,6 +68,10 @@ void Decoder::Clear()
 	m_lineBuf.SetLength(0);
 	m_encrypted = false;
 	m_authFailed = false;
+	// T3: reset the bootstrap-extracted segment index between articles — a stale
+	// index from a previous article would corrupt this article's key derivation
+	// and bypass dual-bootstrap agreement.
+	m_segmentIndex = 0;
 	m_cipher.clear();
 	memset(m_salt, 0, sizeof(m_salt));
 	memset(m_tag, 0, sizeof(m_tag));
@@ -76,6 +80,7 @@ void Decoder::Clear()
 	m_encryptedWireMode = false;
 	m_wireProcessed = false;
 	m_wireBuffer.clear();
+	m_unstuffAtLineStart = true;
 }
 
 /* At the beginning of article the processing goes line by line to find '=ybegin'-marker.
@@ -91,6 +96,14 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 		ProcessRaw(buffer, len);
 		return len;
 	}
+
+	// T9 / C2-05 (Control Std v1.2 "Transport boundary"): consumers MUST
+	// dot-unstuff before line splitting / bootstrap extraction. The NNTP
+	// connection layer delivers raw socket bytes, so this decoder is the
+	// single unstuffing owner. RFC 3977 §3.1.1: a '.' at line start followed
+	// by '.' (or by CRLF) is the escape — strip exactly one dot; "\r\n.\r\n"
+	// is the terminator itself (not unstuffed).
+	UnstuffInPlace(buffer, len);
 
 	bool alreadyBuffered = false;
 
@@ -307,6 +320,50 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	}
 
 	return outlen;
+}
+
+void Decoder::UnstuffInPlace(char* buffer, int& len)
+{
+	int read = 0;
+	int write = 0;
+	while (read < len)
+	{
+		if (m_unstuffAtLineStart && buffer[read] == '.')
+		{
+			if (read + 1 < len && buffer[read + 1] == '.')
+			{
+				// Stuffed data: ".." → "." (drop exactly one dot).
+				buffer[write++] = '.';
+				read += 2;
+			}
+			else if (read + 2 < len && buffer[read + 1] == '\r' && buffer[read + 2] == '\n')
+			{
+				// Article terminator "\r\n.\r\n": keep verbatim (eof detection
+				// downstream relies on it); stop unstuffing for this buffer.
+				buffer[write++] = buffer[read++];
+				m_unstuffAtLineStart = false;
+			}
+			else if (read + 2 < len && buffer[read + 1] == '\n')
+			{
+				// LF-only terminator ".\n": keep verbatim.
+				buffer[write++] = buffer[read++];
+				m_unstuffAtLineStart = false;
+			}
+			else
+			{
+				// Leading '.' followed by other content (or chunk boundary):
+				// the escape dot is stripped (RFC 3977 §3.1.1 — producers MUST
+				// dot-stuff any line starting with '.').
+				read++;
+			}
+			m_unstuffAtLineStart = false;
+			continue;
+		}
+
+		m_unstuffAtLineStart = buffer[read] == '\n';
+		buffer[write++] = buffer[read++];
+	}
+	len = write;
 }
 
 void Decoder::ParseYpart(const char* buffer)

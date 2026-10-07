@@ -146,6 +146,12 @@ private:
 	bool m_wireProcessed = false;
 	std::string m_wireBuffer;
 
+	// T9 / C2-05: RFC 3977 §3.1.1 dot-unstuffing state. The connection layer
+	// delivers raw socket bytes (single unstuffing owner: this decoder, before
+	// any line splitting or bootstrap extraction).
+	bool m_unstuffAtLineStart = true;
+
+	void UnstuffInPlace(char* buffer, int& len);
 	void ProcessRestoredBlock(const std::string& wireBlock);
 	EFormat DetectFormat(const char* buffer, int len);
 	void ProcessYenc(char* buffer, int len);

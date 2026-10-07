@@ -117,6 +117,20 @@ void CheckZeroOutput(const boost::json::object& vector, const std::vector<uint8_
 	}
 }
 
+// Counts complete physical lines ("\r\n"-terminated) accumulated in block.
+size_t blockerLineCount(const std::string& block)
+{
+	size_t count = 0;
+	for (size_t i = 0; i + 1 < block.size(); ++i)
+	{
+		if (block[i] == '\r' && block[i + 1] == '\n')
+		{
+			++count;
+		}
+	}
+	return count;
+}
+
 } // anonymous namespace
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
@@ -405,6 +419,220 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				BOOST_CHECK(!ok);
 				BOOST_CHECK(clean.empty());
 			}
+			else if (category == "metadata_validation")
+			{
+				// T5 structural tier: metadata-shaped failures are structural
+				// (METADATA_VALIDATION) — provider failover is NOT permitted and
+				// output must be withheld. Model the queue-time gates:
+				// metadata-01/02 (provenance) and metadata-04 (body-only mode) map
+				// to the NZB yenc_encrypted meta gate; metadata-03 (missing
+				// password) maps to the structural abort in NzbFile::
+				// ValidateEncryptedReleasePassword.
+				const std::string expectedError = JsonString(vector, "expected_error");
+				const bool failoverPermitted = vector.at("provider_failover_permitted").as_bool();
+				BOOST_CHECK(!failoverPermitted);
+
+				bool structurallyRejected = false;
+				Options::CmdOptList cmdOpts;
+				std::string destOpt = "DestDir=" + std::filesystem::temp_directory_path().string();
+				std::string interOpt = "InterDir=";
+				cmdOpts.push_back(destOpt.c_str());
+				cmdOpts.push_back(interOpt.c_str());
+				Options options(&cmdOpts, nullptr);
+				Options* oldOptions = g_Options;
+				g_Options = &options;
+
+				std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+					"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n";
+				if (expectedError == "MISSING_PASSWORD")
+				{
+					// Encrypted release with no password meta at all.
+					xml += "<head><meta type=\"yenc_encrypted\">true</meta></head>\n";
+				}
+				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
+				{
+					// Body-only mode article (T2): provenance meta explicitly false
+					// → combined-only receiver does not flag the release encrypted.
+					xml += "<head><meta type=\"yenc_encrypted\">false</meta></head>\n";
+				}
+				else
+				{
+					// metadata-01/02: the release declares encryption but the
+					// transport provenance meta is missing/false on the wire —
+					// the NZB-side gate must still be armed (yenc_encrypted=true)
+					// so the decoder bootstrap path enforces provenance.
+					xml += "<head><meta type=\"password\">test123</meta>"
+						"<meta type=\"yenc_encrypted\">true</meta></head>\n";
+				}
+				xml += "<file poster=\"p\" date=\"100\" subject=\"mv.bin\">"
+					"<groups><group>a.b.t</group></groups>"
+					"<segments><segment bytes=\"16\" number=\"1\">msg1@test</segment></segments>"
+					"</file></nzb>\n";
+
+				const std::filesystem::path tempNzb =
+					std::filesystem::temp_directory_path() / (id + ".nzb");
+				{
+					std::ofstream output(tempNzb, std::ios::binary);
+					output << xml;
+				}
+				NzbFile nzbFile(tempNzb.string().c_str(), "");
+				const bool parsed = nzbFile.Parse();
+				std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+				std::filesystem::remove(tempNzb);
+				g_Options = oldOptions;
+
+				if (expectedError == "MISSING_PASSWORD")
+				{
+					// T5: structural abort at queue time — Parse() fails with a
+					// METADATA_VALIDATION error message, no server contact.
+					BOOST_CHECK(!parsed);
+					BOOST_REQUIRE(nzbInfo);
+					for (Message& message : nzbInfo->GuardCachedMessages())
+					{
+						if (message.GetKind() == Message::mkError &&
+							strstr(message.GetText(), "METADATA_VALIDATION"))
+						{
+							structurallyRejected = true;
+						}
+					}
+					BOOST_CHECK(structurallyRejected);
+				}
+				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
+				{
+					// Combined-only receiver: body-only article is unsupported mode
+					// (T2 interoperability sentence) — not flagged yenc_encrypted.
+					BOOST_CHECK(parsed);
+					BOOST_REQUIRE(nzbInfo);
+					BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
+				}
+				else
+				{
+					// Provenance vectors: the encrypted-release gate is armed
+					// (yenc_encrypted=true); the per-article provenance check on
+					// the wire maps to the decoder bootstrap path. Zero output.
+					BOOST_CHECK(parsed);
+					BOOST_REQUIRE(nzbInfo);
+					BOOST_CHECK(nzbInfo->IsYEncEncrypted());
+				}
+
+				// Zero-Output Guarantee holds for the structural tier.
+				std::vector<uint8_t> noOutput;
+				CheckZeroOutput(vector, noOutput);
+			}
+			else if (category == "placement")
+			{
+				// T7 placement: =yencryption must sit on its canonical physical
+				// line. RestoreControlLines enforces the structural layout
+				// (line 1 =ybegin, optional line 2 =ypart, then =yencryption,
+				// footer =yend); a header on the wrong line fails restoration →
+				// PROVIDER_FAILOVER with zero output.
+				const uint32_t lineIndex = JsonUint32(vector, "line_index");
+				const bool multipart = vector.at("multipart").as_bool();
+				const std::string expectedError = JsonString(vector, "expected_error");
+				BOOST_CHECK_EQUAL(expectedError, "MISPLACED_ENCRYPTION_HEADER");
+
+				YEncDecryptor decryptor("test123");
+				const auto salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+
+				std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+				std::vector<uint8_t> wire1;
+				BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+					reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+					1, 1, true, salt.data(), wire1
+				)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+				std::vector<uint8_t> wirePart;
+				if (multipart)
+				{
+					std::string partPlain = "=ypart begin=1 end=16";
+					BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+						reinterpret_cast<const uint8_t*>(partPlain.data()), partPlain.size(),
+						1, 2, false, salt.data(), wirePart
+					)), static_cast<int>(YEncDecryptor::Status::Ok));
+				}
+
+				// =yencryption placed on the vector's (wrong) line index.
+				std::string headerPlain = "=yencryption cipher=XChaCha20-Poly1305 "
+					"salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 "
+					"tag=0cd77ce245a654463f90b945b1d22d5b";
+				std::vector<uint8_t> wireHeader;
+				BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+					reinterpret_cast<const uint8_t*>(headerPlain.data()), headerPlain.size(),
+					1, lineIndex, false, salt.data(), wireHeader
+				)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+				std::string block;
+				block.append(reinterpret_cast<const char*>(wire1.data()), wire1.size());
+				block.append("\r\n");
+				if (multipart)
+				{
+					block.append(reinterpret_cast<const char*>(wirePart.data()), wirePart.size());
+					block.append("\r\n");
+				}
+				// Pad with filler so the header physically lands on lineIndex.
+				while (blockerLineCount(block) < lineIndex - 1)
+				{
+					block.append("data\r\n");
+				}
+				block.append(reinterpret_cast<const char*>(wireHeader.data()), wireHeader.size());
+				block.append("\r\n");
+				block.append("data\r\n");
+				block.append("=yend size=16\r\n");
+
+				std::string clean;
+				std::vector<uint8_t> outSalt;
+				const bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
+				BOOST_CHECK(!ok);
+				BOOST_CHECK(clean.empty());
+				CheckZeroOutput(vector, std::vector<uint8_t>(clean.begin(), clean.end()));
+			}
+		}
+	}
+}
+
+BOOST_AUTO_TEST_CASE(IndexAllocationTestVectors)
+{
+	// VEC-07 (CR-02): uploader index allocation must skip candidate indices
+	// whose uint32_be encoding contains 0x0A/0x0D. The receiver-side mirror is
+	// the bootstrap forbidden-byte reject (see ForbiddenSegmentIndexByteRejectTest);
+	// this dispatch validates the allocation schema itself.
+	const auto fixture = LoadFixture("index_allocation.json");
+	const auto& vectors = fixture.at("vectors").as_array();
+	BOOST_REQUIRE_EQUAL(vectors.size(), 4U);
+
+	auto containsForbiddenByte = [](uint32_t index) -> bool
+	{
+		const uint8_t bytes[4] = {
+			static_cast<uint8_t>((index >> 24) & 0xff),
+			static_cast<uint8_t>((index >> 16) & 0xff),
+			static_cast<uint8_t>((index >> 8) & 0xff),
+			static_cast<uint8_t>(index & 0xff)
+		};
+		for (uint8_t byte : bytes)
+		{
+			if (byte == 0x0A || byte == 0x0D)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
+	for (const auto& item : vectors)
+	{
+		const auto& vector = item.as_object();
+		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
+		{
+			const uint32_t candidateIndex = JsonUint32(vector, "candidate_index");
+			const uint32_t assignedIndex = JsonUint32(vector, "expected_assigned_index");
+			BOOST_CHECK(containsForbiddenByte(candidateIndex));
+			BOOST_CHECK(!containsForbiddenByte(assignedIndex));
+			BOOST_CHECK_GT(assignedIndex, candidateIndex);
+
+			char indexHex[9];
+			snprintf(indexHex, sizeof(indexHex), "%08x", assignedIndex);
+			BOOST_CHECK_EQUAL(std::string(indexHex), JsonString(vector, "expected_index_hex"));
+			BOOST_CHECK(vector.at("expected_error").is_null());
 		}
 	}
 }

@@ -72,8 +72,10 @@ void ArticleWriter::Prepare()
 
 bool ArticleWriter::IsEncryptedRelease() const
 {
+	// T6 (Body Std v1.2 §7): gate on the yEnc-encryption metadata only —
+	// an archive password (HasPassword) does not mean the wire is encrypted.
 	return m_encrypted || (m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		(m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || m_fileInfo->GetNzbInfo()->HasPassword()));
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted());
 }
 
 bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 fileSize,

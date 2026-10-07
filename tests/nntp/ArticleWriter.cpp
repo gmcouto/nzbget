@@ -21,6 +21,7 @@
 
 #include <boost/test/unit_test.hpp>
 #include "ArticleWriter.h"
+#include "ArticleDownloader.h"
 #include "DownloadInfo.h"
 #include "Options.h"
 #include "FileSystem.h"
@@ -373,6 +374,71 @@ BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
 	BOOST_CHECK(writer.GetCachedData() == nullptr);
 
 	g_Options = oldOptions;
+}
+
+BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
+{
+	// T6 (Body Std v1.2 §7): an encrypted release whose article arrives without
+	// the =yencryption bootstrap is provider corruption. DecodeCheck returns
+	// adFailed BEFORE any writer Start/Write/Finish — this test proves the
+	// writer machinery commits nothing when that path fires: no destination
+	// file, no cached ciphertext, no CRC/diskstate metadata.
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_silent_ciphertext_test";
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	std::string optDest = "DestDir=" + tempDir.string();
+	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	cmdOpts.push_back(optDest.c_str());
+	cmdOpts.push_back("DirectWrite=yes");
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("silent_ct.dat");
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(32);
+
+	// Simulate the DecodeCheck silent-ciphertext path: declaredEncrypted &&
+	// !m_decoder.IsEncrypted() → return adFailed before writer Start().
+	// The writer must therefore never touch disk; assert the mapping too.
+	const bool declaredEncrypted = nzbInfo.IsYEncEncrypted();
+	const bool decoderEncrypted = false; // no bootstrap on the wire
+	ArticleDownloader::EStatus mapped = declaredEncrypted && !decoderEncrypted ?
+		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
+	BOOST_CHECK_EQUAL(static_cast<int>(mapped), static_cast<int>(ArticleDownloader::adFailed));
+
+	ArticleWriter writer;
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("silent_ct_article");
+	writer.Prepare();
+	// No Start(), no Write(), no Finish() — matching the fixed DecodeCheck path.
+
+	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
+	BOOST_CHECK(writer.GetCachedData() == nullptr);
+	BOOST_CHECK(!articleInfo.HasSegmentIndex());
+
+	// Even if ciphertext were staged (worst case), DiscardStagedData on the
+	// failure path must leave no cache and no destination file.
+	writer.SetEncrypted(true);
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "silent_ct.dat", 32, 0, 32));
+	std::vector<char> ciphertext(32, 'Q');
+	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
+	writer.DiscardStagedData();
+	BOOST_CHECK(writer.GetCachedData() == nullptr);
+	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
+
+	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

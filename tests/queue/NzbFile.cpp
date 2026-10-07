@@ -334,75 +334,6 @@ BOOST_AUTO_TEST_CASE(BuildFinalDirNameUniqueIdTest)
 	BOOST_CHECK_NE(finalDir1, finalDir2);
 }
 
-BOOST_AUTO_TEST_CASE(ParseSegmentIndexTest)
-{
-	uint32 outVal = 0;
-	std::string errToken;
-
-	// Valid values
-	BOOST_CHECK(NzbFile::ParseSegmentIndex("1", outVal, errToken));
-	BOOST_CHECK_EQUAL(outVal, 1U);
-
-	BOOST_CHECK(NzbFile::ParseSegmentIndex("4294967295", outVal, errToken));
-	BOOST_CHECK_EQUAL(outVal, 4294967295U);
-
-	BOOST_CHECK(NzbFile::ParseSegmentIndex("42", outVal, errToken));
-	BOOST_CHECK_EQUAL(outVal, 42U);
-
-	BOOST_CHECK(NzbFile::ParseSegmentIndex("12345678", outVal, errToken));
-	BOOST_CHECK_EQUAL(outVal, 12345678U);
-
-	// Empty
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_EMPTY");
-
-	// Zero
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("0", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_ZERO");
-
-	// Sign
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("+1", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_SIGN");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("-1", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_SIGN");
-
-	// Whitespace
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex(" 1", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1 ", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1 2", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1\t", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1\n", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1\r", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_WHITESPACE");
-
-	// Leading zero
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("01", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_LEADING_ZERO");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("007", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_LEADING_ZERO");
-
-	// Non-digit
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("0x01", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1.0", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("one", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("1a", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_NON_DIGIT");
-
-	// Overflow
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("4294967296", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_OVERFLOW");
-	BOOST_CHECK(!NzbFile::ParseSegmentIndex("18446744073709551615", outVal, errToken));
-	BOOST_CHECK_EQUAL(errToken, "INVALID_SEGMENT_INDEX_OVERFLOW");
-}
-
 BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 {
 	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
@@ -603,38 +534,75 @@ BOOST_AUTO_TEST_CASE(PasswordControlCharacterSanitizationTest)
 	}
 }
 
-BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesMalformedAttributeTest)
+BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 {
-	auto parseXml = [](std::string_view xml, const std::string& filename) -> bool
+	// T5 structural tier: yenc_encrypted release without password meta must fail
+	// at parse/queue time (METADATA_VALIDATION) — no server contact ever happens.
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
 	{
 		const fs::path tempNzb = fs::temp_directory_path() / filename;
 		WriteRawNzb(tempNzb, xml);
 
 		NzbFile nzbFile(tempNzb.string().c_str(), "");
 		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	const std::string xml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<head><meta type=\"yenc_encrypted\">true</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"nopass.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	auto [ok, info] = parseXml(xml, "enc_nopwd.nzb");
+	BOOST_CHECK(!ok);
+	BOOST_REQUIRE(info);
+	bool foundValidation = false;
+	bool foundAuthFailure = false;
+	if (info)
+	{
+		for (Message& message : info->GuardCachedMessages())
+		{
+			if (message.GetKind() == Message::mkError &&
+				strstr(message.GetText(), "METADATA_VALIDATION"))
+			{
+				foundValidation = true;
+			}
+			// Structural abort must never be classified as a server/auth failure.
+			if (strstr(message.GetText(), "dsAuthFailed"))
+			{
+				foundAuthFailure = true;
+			}
+		}
+	}
+	BOOST_CHECK(foundValidation);
+	BOOST_CHECK(!foundAuthFailure);
+
+	// Legacy segmentIndex attributes are ignored (T3), not fatal:
+	auto parseLegacy = [](std::string_view xml, const std::string& filename) -> bool
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
 		fs::remove(tempNzb);
 		return ok;
 	};
-
-	auto createNzbWithSegIndex = [](const std::string& segIndexAttr) -> std::string
-	{
-		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"yenc_encrypted\">true</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"file.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"" + segIndexAttr + "\">msg1@test</segment></segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-	};
-
-	// All malformed segmentIndex attributes must cause Parse() to fail (not silently swallow)
-	BOOST_CHECK(!parseXml(createNzbWithSegIndex("0"), "mal_zero.nzb"));
-	BOOST_CHECK(!parseXml(createNzbWithSegIndex("-5"), "mal_neg.nzb"));
-	BOOST_CHECK(!parseXml(createNzbWithSegIndex("invalid"), "mal_str.nzb"));
-	BOOST_CHECK(!parseXml(createNzbWithSegIndex(" 1"), "mal_space.nzb"));
-	BOOST_CHECK(!parseXml(createNzbWithSegIndex("01"), "mal_leadzero.nzb"));
-	BOOST_CHECK(!parseXml(createNzbWithSegIndex("4294967296"), "mal_overflow.nzb"));
+	const std::string legacyXml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"legacy.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"malformed-not-a-number\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	BOOST_CHECK(parseLegacy(legacyXml, "legacy_ignored.nzb"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

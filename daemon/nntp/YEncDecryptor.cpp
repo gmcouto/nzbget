@@ -19,6 +19,7 @@
 
 #include "nzbget.h"
 #include "YEncDecryptor.h"
+#include "Log.h"
 
 #include <sodium.h>
 #include <argon2.h>
@@ -626,6 +627,17 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 			return Status::Error;
 		}
 
+		// CR-02 (Body Std v1.2): any uint32_be(segmentIndex) byte 0x0A/0x0D would
+		// split Line 1 on the wire. Reject the bootstrap instead of decrypting.
+		if (wireData[16] == 0x0A || wireData[16] == 0x0D ||
+			wireData[17] == 0x0A || wireData[17] == 0x0D ||
+			wireData[18] == 0x0A || wireData[18] == 0x0D ||
+			wireData[19] == 0x0A || wireData[19] == 0x0D)
+		{
+			error("Bootstrap extraction failed: FORBIDDEN_SEGMENT_INDEX_BYTE");
+			return Status::Error;
+		}
+
 		if (outSalt)
 		{
 			outSalt->assign(salt, salt + 16);
@@ -874,6 +886,14 @@ bool YEncDecryptor::RestoreControlLines(
 	std::vector<uint8_t>& outLine1Salt,
 	YEncryptionHeader* outHeader)
 {
+	// T7 header-loop semantics (Control Std v1.2 §5 step 4): this decoder uses
+	// the structural-assumption approach — it decrypts the known control-line
+	// positions (Line 1 =ybegin, optional =ypart, =yencryption, footer =yend)
+	// instead of probing each middle line. For canonical producers this is
+	// conformant: only decryption success yielding non-=y content would
+	// terminate the header loop, and any structural mismatch (including a
+	// misplaced =yencryption, see the placement vectors) fails closed here as
+	// PROVIDER_FAILOVER — no FF1 error is ever passed through as a data line.
 	outCleanBlock.clear();
 	outLine1Salt.clear();
 	if (!wireBlock || wireLen == 0)

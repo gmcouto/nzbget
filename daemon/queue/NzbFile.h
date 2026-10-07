@@ -39,7 +39,6 @@ public:
 	const std::string& GetMetaTitle() const { return m_metaTitle; }
 
 	static bool ParseFileCounter(std::string_view subject, uint32& fileOrdinal, uint32& totalFiles);
-	static bool ParseSegmentIndex(std::string_view valStr, uint32& outVal, std::string& errToken);
 
 	void LogDebugInfo();
 
@@ -57,6 +56,7 @@ private:
 	void BuildFilenames();
 	bool ProcessFiles();
 	bool ValidateSegmentIdentities();
+	bool ValidateEncryptedReleasePassword();
 	void CalcHashes();
 	bool HasDuplicateFilenames();
 	void ReadPasswordFromFilename();

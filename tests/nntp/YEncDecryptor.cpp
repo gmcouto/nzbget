@@ -706,4 +706,52 @@ BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
 	BOOST_CHECK(outPlaintext.empty());
 }
 
+BOOST_AUTO_TEST_CASE(ForbiddenSegmentIndexByteRejectTest)
+{
+	// CR-02 (Body Std v1.2): any uint32_be(segmentIndex) byte 0x0A/0x0D would split
+	// Line 1 on the wire. Bootstrap extraction must reject (Status::Error).
+	// Wire line 1: [16B salt][4B BE index][2B FF1 ct] — same salt as canonical vectors.
+	struct Case
+	{
+		uint32_t index;
+		const char* indexHex;
+	};
+	const Case cases[] = {
+		{10, "0000000a"},
+		{13, "0000000d"},
+		{266, "0000010a"},
+		{269, "0000010d"},
+	};
+	for (const auto& testCase : cases)
+	{
+		std::string line1 = "4b376d5839704c32715238764e34775a";
+		line1 += testCase.indexHex;
+		line1 += "3d3d";
+		std::vector<uint8_t> wire = HexToBin(line1);
+		BOOST_REQUIRE_EQUAL(wire.size(), 22U);
+
+		YEncDecryptor decryptor("test123");
+		std::vector<uint8_t> plaintext;
+		std::vector<uint8_t> salt;
+		uint32_t extractedIndex = 0;
+		auto st = decryptor.DecryptControlLine(
+			wire.data(), wire.size(), 0, 1, true, plaintext, &salt, &extractedIndex);
+		BOOST_CHECK(st == YEncDecryptor::Status::Error);
+		BOOST_CHECK(plaintext.empty());
+		BOOST_CHECK(salt.empty());
+		BOOST_CHECK_EQUAL(extractedIndex, 0U);
+	}
+
+	// Control: a safe index (11) with the same salt still passes bootstrap extraction.
+	std::string safeLine1 = "4b376d5839704c32715238764e34775a0000000b3d3d";
+	std::vector<uint8_t> safeWire = HexToBin(safeLine1);
+	YEncDecryptor decryptor("test123");
+	std::vector<uint8_t> plaintext;
+	std::vector<uint8_t> salt;
+	uint32_t extractedIndex = 0;
+	auto st = decryptor.DecryptControlLine(
+		safeWire.data(), safeWire.size(), 0, 1, true, plaintext, &salt, &extractedIndex);
+	BOOST_CHECK_EQUAL(extractedIndex, 11U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

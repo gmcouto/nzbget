@@ -58,7 +58,7 @@ public:
 	~Decoder();
 	EStatus Check();
 	void Clear();
-	int DecodeBuffer(char* buffer, int len);
+	int DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed = false);
 	void SetCrcCheck(bool crcCheck) { m_crcCheck = crcCheck; }
 	void SetRawMode(bool rawMode) { m_rawMode = rawMode; }
 	EFormat GetFormat() { return m_format; }

@@ -25,6 +25,29 @@
 #include "Util.h"
 #include "YEncDecryptor.h"
 
+// rapidyenc internals: DecodeYenc needs the non-raw (no NNTP dot-unstuffing)
+// decoder for restored encrypted blocks. rapidyenc only exposes its
+// incremental "end-aware" decoder with dot-unstuffing hardwired (isRaw=true);
+// the non-raw variant is reachable only via the internal _do_decode function
+// pointer (extern-declared here, defined in rapidyenc's src/decoder.cc).
+namespace RapidYenc
+{
+	typedef int YencDecoderState;
+	extern int (*_do_decode)(const unsigned char**, unsigned char**, size_t, int*);
+	extern int (*_do_decode_raw)(const unsigned char**, unsigned char**, size_t, int*);
+	extern int _decode_isa;
+}
+
+// Non-raw yEnc decode: returns bytes written to dest. Consumes the entire
+// len input (the non-raw decoder has no incremental early-exit semantics).
+static size_t RapidYencDecodeNoUnstuffing(const void* src, void* dest, size_t len, int* state)
+{
+	unsigned char* ds = (unsigned char*)dest;
+	RapidYenc::_do_decode(
+		(const unsigned char**)&src, &ds, len, state);
+	return ds - (unsigned char*)dest;
+}
+
 Decoder::Decoder()
 {
 	Clear();
@@ -90,7 +113,7 @@ void Decoder::Clear()
  * process '=yend'-marker and EOF-marker.
  * UU-encoded articles are processed completely in line by line mode.
  */
-int Decoder::DecodeBuffer(char* buffer, int len)
+int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 {
 	if (m_rawMode)
 	{
@@ -104,7 +127,16 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 	// single unstuffing owner. RFC 3977 §3.1.1: a '.' at line start followed
 	// by '.' (or by CRLF) is the escape — strip exactly one dot; "\r\n.\r\n"
 	// is the terminator itself (not unstuffed).
-	UnstuffInPlace(buffer, len);
+	// CR-01-R4: the restored block produced by ProcessRestoredBlock has
+	// already been unstuffed (its source chunks went through UnstuffInPlace
+	// when they were accumulated into m_wireBuffer). Feeding it through the
+	// unstuffing pass again would corrupt yEnc data lines that legitimately
+	// begin with '.', so such callers pass alreadyUnstuffed=true. Exactly one
+	// unstuffing pass per byte of article, ever.
+	if (!alreadyUnstuffed)
+	{
+		UnstuffInPlace(buffer, len);
+	}
 
 	bool alreadyBuffered = false;
 
@@ -189,33 +221,15 @@ int Decoder::DecodeBuffer(char* buffer, int len)
 
 		if (m_encryptedWireMode)
 		{
-			bool complete = false;
-			if (m_wireBuffer.find("\r\n.\r\n") != std::string::npos ||
+			bool complete =
+				// Whole-buffer terminator (".\r\n" or ".\n")
+				m_wireBuffer == ".\r\n" || m_wireBuffer == ".\n" ||
+				// Terminator embedded anywhere in the accumulated block.
+				// Subsumes the suffix-only forms: "\r\n.\r\n" / "\n.\n" /
+				// "\n.\r\n" at the very end already match these scans.
+				m_wireBuffer.find("\r\n.\r\n") != std::string::npos ||
 				m_wireBuffer.find("\n.\n") != std::string::npos ||
-				m_wireBuffer.find("\n.\r\n") != std::string::npos)
-			{
-				complete = true;
-			}
-			else if (m_wireBuffer.size() == 3 && m_wireBuffer == ".\r\n")
-			{
-				complete = true;
-			}
-			else if (m_wireBuffer.size() == 2 && m_wireBuffer == ".\n")
-			{
-				complete = true;
-			}
-			else if (m_wireBuffer.size() >= 5 && m_wireBuffer.substr(m_wireBuffer.size() - 5) == "\r\n.\r\n")
-			{
-				complete = true;
-			}
-			else if (m_wireBuffer.size() >= 3 && m_wireBuffer.substr(m_wireBuffer.size() - 3) == "\n.\n")
-			{
-				complete = true;
-			}
-			else if (m_wireBuffer.size() >= 4 && m_wireBuffer.substr(m_wireBuffer.size() - 4) == "\n.\r\n")
-			{
-				complete = true;
-			}
+				m_wireBuffer.find("\n.\r\n") != std::string::npos;
 
 			if (complete)
 			{
@@ -557,6 +571,69 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	const void* src = buffer;
 	void* dst = outbuf;
 
+	// CR-01-R4: in wire mode the restored block has already been dot-unstuffed
+	// exactly once (UnstuffInPlace ran on the raw wire chunks). rapidyenc's
+	// incremental decoder is hardwired isRaw and would strip every line-start
+	// '.' a second time, corrupting restored yEnc data lines beginning with
+	// '.'. For restored blocks, locate the body end ourselves and decode the
+	// body with the non-raw decoder (no unstuffing); the "=yend" line is then
+	// processed by the ordinary line loop. Ordinary articles keep the raw
+	// incremental path (rapidyenc owns unstuffing in situ).
+	if (m_encryptedWireMode)
+	{
+		size_t bodyLen = len;
+		for (size_t i = 0; i + 2 < (size_t)len; i++)
+		{
+			if (buffer[i] == '\r' && buffer[i + 1] == '\n')
+			{
+				if (buffer[i + 2] == '=')
+				{
+					bodyLen = i;
+					break;
+				}
+				if (i + 4 < (size_t)len && buffer[i + 2] == '.' &&
+					buffer[i + 3] == '\r' && buffer[i + 4] == '\n')
+				{
+					bodyLen = i;
+					break;
+				}
+			}
+		}
+
+		// Decode the body with the non-raw (no unstuffing) decoder. The non-raw
+		// decoder consumes the entire bodyLen input in one call; the returned
+		// count is bytes written to dst (escapes shrink the output).
+		size_t bodyWritten = RapidYencDecodeNoUnstuffing(buffer, dst, bodyLen, &m_state);
+		dst = (char*)dst + bodyWritten;
+
+		int bytesWritten = static_cast<int>(static_cast<char*>(dst) - outbuf);
+
+		if (bodyLen < (size_t)len)
+		{
+			// Body end found: switch back to line mode to process the
+			// "=yend"/eof marker line (mirrors the raw endseq == 1 path).
+			m_lineBuf.SetLength(0);
+			m_lineBuf.Append(buffer + bodyLen + 2, len - bodyLen - 2);
+			m_body = false;
+		}
+
+		if (m_crcCheck && bytesWritten > 0)
+		{
+			m_crc32.Append(reinterpret_cast<unsigned char*>(outbuf), bytesWritten);
+		}
+
+		m_outSize += bytesWritten;
+
+		if (m_encrypted)
+		{
+			m_cipherPayload.insert(m_cipherPayload.end(),
+				reinterpret_cast<const uint8_t*>(outbuf),
+				reinterpret_cast<const uint8_t*>(outbuf) + bytesWritten);
+		}
+
+		return bytesWritten;
+	}
+
 	auto endseq = rapidyenc_decode_incremental(&src, &dst, len, (RapidYencDecoderState*)&m_state);
 
 	int bytesWritten = static_cast<int>(static_cast<char*>(dst) - outbuf);
@@ -641,7 +718,10 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 	m_lineBuf.SetLength(0);
 	m_wireProcessed = true;
 
-	DecodeBuffer(cleanBlock.data(), static_cast<int>(cleanBlock.size()));
+	// CR-01-R4: cleanBlock's source chunks were unstuffed exactly once when
+	// accumulated into m_wireBuffer; do not run a second unstuffing pass here
+	// or restored yEnc data lines beginning with '.' get mangled.
+	DecodeBuffer(cleanBlock.data(), static_cast<int>(cleanBlock.size()), /*alreadyUnstuffed=*/true);
 }
 
 Decoder::EStatus Decoder::Check()
@@ -683,17 +763,20 @@ Decoder::EStatus Decoder::CheckYenc()
 	debug("Expected crc32=%x", m_expectedCRC);
 	debug("Calculated crc32=%x", m_calculatedCRC);
 
-	if (!m_begin)
+	// WR-01-R4: check auth failure before completeness so a truncated
+	// encrypted article is classified as dsAuthFailed (provider failover
+	// tier), not dsArticleIncomplete.
+	if (m_authFailed)
+	{
+		return dsAuthFailed;
+	}
+	else if (!m_begin)
 	{
 		return dsNoBinaryData;
 	}
 	else if (!m_end)
 	{
 		return dsArticleIncomplete;
-	}
-	else if (m_authFailed)
-	{
-		return dsAuthFailed;
 	}
 	else if ((!m_part && m_size != m_endSize) || (m_endSize != m_outSize))
 	{

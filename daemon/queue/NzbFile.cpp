@@ -319,108 +319,34 @@ bool NzbFile::ParseFileCounter(std::string_view subject, uint32& fileOrdinal, ui
 	return true;
 }
 
-bool NzbFile::ParseSegmentIndex(std::string_view valStr, uint32& outVal, std::string& errToken)
+bool NzbFile::ValidateSegmentIdentities()
 {
-	if (valStr.empty())
-	{
-		errToken = "INVALID_SEGMENT_INDEX_EMPTY";
-		return false;
-	}
+	// T3 (Body Std v1.2 §8): readers MUST NOT consume segmentIndex XML attributes.
+	// Segment identity comes solely from the wire Line 1 bootstrap at download time;
+	// per-article segmentIndex stays unset until the decryptor extracts it.
+	m_nzbInfo->SetYEncEncrypted(m_yencEncryptedMeta);
 
-	if (valStr == "0")
-	{
-		errToken = "INVALID_SEGMENT_INDEX_ZERO";
-		return false;
-	}
-
-	if (valStr[0] == '+' || valStr[0] == '-')
-	{
-		errToken = "INVALID_SEGMENT_INDEX_SIGN";
-		return false;
-	}
-
-	for (char c : valStr)
-	{
-		if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
-		{
-			errToken = "INVALID_SEGMENT_INDEX_WHITESPACE";
-			return false;
-		}
-	}
-
-	bool allDigits = true;
-	for (char c : valStr)
-	{
-		if (c < '0' || c > '9')
-		{
-			allDigits = false;
-			break;
-		}
-	}
-
-	if (valStr.size() > 1 && valStr[0] == '0' && allDigits)
-	{
-		errToken = "INVALID_SEGMENT_INDEX_LEADING_ZERO";
-		return false;
-	}
-
-	if (!allDigits)
-	{
-		errToken = "INVALID_SEGMENT_INDEX_NON_DIGIT";
-		return false;
-	}
-
-	uint64 val = 0;
-	auto [ptr, ec] = std::from_chars(valStr.data(), valStr.data() + valStr.size(), val);
-	if (ec != std::errc() || ptr != valStr.data() + valStr.size() || val > 4294967295ULL)
-	{
-		errToken = "INVALID_SEGMENT_INDEX_OVERFLOW";
-		return false;
-	}
-
-	outVal = static_cast<uint32>(val);
 	return true;
 }
 
-bool NzbFile::ValidateSegmentIdentities()
+bool NzbFile::ValidateEncryptedReleasePassword()
 {
-	bool isEncrypted = m_yencEncryptedMeta;
-	m_nzbInfo->SetYEncEncrypted(isEncrypted);
-
-	for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
+	// T5 structural tier (METADATA_VALIDATION): an encrypted release without a
+	// password can never authenticate. Abort at queue time — before any server
+	// contact — instead of burning every provider with per-article auth failures.
+	if (m_yencEncryptedMeta && m_password.empty())
 	{
-		for (const auto& article : *fileInfo->GetArticles())
-		{
-			if (article)
-			{
-				if (article->HasRawSegmentIndex())
-				{
-					uint32 segIndex = 0;
-					std::string errToken;
-					if (ParseSegmentIndex(article->GetRawSegmentIndex(), segIndex, errToken))
-					{
-						article->SetSegmentIndex(segIndex);
-					}
-					else
-					{
-						m_nzbInfo->AddMessage(Message::mkError, BString<1024>("Error parsing nzb-file: %s", errToken.c_str()));
-						return false;
-					}
-				}
-				else
-				{
-					article->SetSegmentIndex(std::nullopt);
-				}
-			}
-		}
+		m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
+			"Error parsing nzb-file %s: METADATA_VALIDATION: yenc_encrypted release has no password",
+			FileSystem::BaseFileName(m_fileName.c_str())));
+		return false;
 	}
-
 	return true;
 }
 
 bool NzbFile::ProcessFiles()
 {
-	if (!ValidateSegmentIdentities())
+	if (!ValidateSegmentIdentities() || !ValidateEncryptedReleasePassword())
 	{
 		return false;
 	}
@@ -602,7 +528,6 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 
 		int64 lsize = -1;
 		int partNumber = -1;
-		const char* rawSegmentIndex = nullptr;
 
 		for (int i = 0; atts[i] && atts[i + 1]; i += 2)
 		{
@@ -616,10 +541,7 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			{
 				partNumber = atol(attrvalue);
 			}
-			if (!strcmp("segmentIndex", attrname))
-			{
-				rawSegmentIndex = attrvalue;
-			}
+			// segmentIndex attributes (if present) are ignored per Body Std v1.2 §8.
 		}
 
 		if (partNumber > 0)
@@ -628,10 +550,6 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			std::unique_ptr<ArticleInfo> article = std::make_unique<ArticleInfo>();
 			article->SetPartNumber(partNumber);
 			article->SetSize(lsize);
-			if (rawSegmentIndex)
-			{
-				article->SetRawSegmentIndex(rawSegmentIndex);
-			}
 			m_article = AddArticle(m_fileInfo.get(), std::move(article));
 		}
 	}

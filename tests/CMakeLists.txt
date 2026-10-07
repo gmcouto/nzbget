@@ -35,6 +35,8 @@ add_test(NAME QueueTest        COMMAND ${TESTS_TARGET} --run_test=QueueTest --lo
 add_test(NAME MainTest         COMMAND ${TESTS_TARGET} --run_test=MainTest --log_level=message)
 add_test(NAME ExtensionTest    COMMAND ${TESTS_TARGET} --run_test=ExtensionTest --log_level=message)
 add_test(NAME NNTPTest         COMMAND ${TESTS_TARGET} --run_test=NNTPTest --log_level=message)
+add_test(NAME ConformanceVectors COMMAND ${TESTS_TARGET} --run_test=QueueTest/Conformance* --log_level=message)
+set_tests_properties(ConformanceVectors PROPERTIES TIMEOUT 120)
 add_test(NAME SystemTest       COMMAND ${TESTS_TARGET} --run_test=SystemTest --log_level=message)
 add_test(NAME PostprocessTest  COMMAND ${TESTS_TARGET} --run_test=PostprocessTest --log_level=message)
 add_test(NAME SystemHealthTest COMMAND ${TESTS_TARGET} --run_test=SystemHealthTest --log_level=message)

@@ -3,6 +3,8 @@ list(APPEND TESTS_SRC
 	${CMAKE_CURRENT_SOURCE_DIR}/queue/Deobfuscation.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/queue/ArchiveProcessor.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/queue/CompletedFile.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/queue/ConformanceVectors.cpp
 )
 
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/testdata/nzbfile DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/testdata/test-vectors DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/testdata)

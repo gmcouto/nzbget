@@ -81,6 +81,7 @@ void Decoder::Clear()
 	m_wireProcessed = false;
 	m_wireBuffer.clear();
 	m_unstuffAtLineStart = true;
+	m_unstuffPendingDot = false;
 }
 
 /* At the beginning of article the processing goes line by line to find '=ybegin'-marker.
@@ -326,34 +327,63 @@ void Decoder::UnstuffInPlace(char* buffer, int& len)
 {
 	int read = 0;
 	int write = 0;
+
+	// WR-01: if previous chunk ended exactly after a line-start '.', and this
+	// chunk starts with '.', then the pair ".." was split across the chunk
+	// boundary. Strip the second dot so only one dot is emitted in total.
+	if (m_unstuffPendingDot)
+	{
+		m_unstuffPendingDot = false;
+		if (read < len && buffer[read] == '.')
+		{
+			read++;
+			m_unstuffAtLineStart = false;
+		}
+	}
+
 	while (read < len)
 	{
 		if (m_unstuffAtLineStart && buffer[read] == '.')
 		{
 			if (read + 1 < len && buffer[read + 1] == '.')
 			{
-				// Stuffed data: ".." → "." (drop exactly one dot).
+				// Stuffed data within chunk: ".." → "." (drop one dot).
 				buffer[write++] = '.';
 				read += 2;
 			}
 			else if (read + 2 < len && buffer[read + 1] == '\r' && buffer[read + 2] == '\n')
 			{
-				// Article terminator "\r\n.\r\n": keep verbatim (eof detection
-				// downstream relies on it); stop unstuffing for this buffer.
+				// Terminator within chunk: ".\r\n" — keep dot verbatim.
 				buffer[write++] = buffer[read++];
 				m_unstuffAtLineStart = false;
 			}
-			else if (read + 2 < len && buffer[read + 1] == '\n')
+			else if (read + 1 < len && buffer[read + 1] == '\n')
 			{
-				// LF-only terminator ".\n": keep verbatim.
+				// LF-only terminator: ".\n" — keep dot verbatim.
 				buffer[write++] = buffer[read++];
+				m_unstuffAtLineStart = false;
+			}
+			else if (read + 2 == len && buffer[read + 1] == '\r')
+			{
+				// WR-01: chunk ends exactly at ".\r" (terminator in progress).
+				// Keep both bytes verbatim so the terminator survives.
+				buffer[write++] = buffer[read++];
+				buffer[write++] = buffer[read++];
+				m_unstuffAtLineStart = false;
+			}
+			else if (read + 1 == len)
+			{
+				// WR-01: chunk ends exactly at line-start '.'. Keep the dot
+				// verbatim (it may be the article terminator ".\r\n" or ".\n",
+				// or the first dot of a split stuffed pair ".."). Record
+				// pending state so a following dot in the next chunk is stripped.
+				buffer[write++] = buffer[read++];
+				m_unstuffPendingDot = true;
 				m_unstuffAtLineStart = false;
 			}
 			else
 			{
-				// Leading '.' followed by other content (or chunk boundary):
-				// the escape dot is stripped (RFC 3977 §3.1.1 — producers MUST
-				// dot-stuff any line starting with '.').
+				// Leading '.' followed by other content: the escape dot is stripped.
 				read++;
 			}
 			m_unstuffAtLineStart = false;

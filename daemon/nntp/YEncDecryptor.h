@@ -156,9 +156,11 @@ public:
 
 	size_t GetCachedSaltCount() const { return m_cachedSalt.empty() ? 0 : 1; }
 	const std::vector<uint8_t>& GetCachedMasterKey() const { return m_cachedMasterKey; }
+	bool IsSodiumInitFailed() const { return m_sodiumInitFailed; }
 
 private:
 	std::string m_password;
+	bool m_sodiumInitFailed = false;
 	std::vector<uint8_t> m_cachedSalt;
 	std::vector<uint8_t> m_cachedMasterKey; // 32 bytes, zeroized on destruction or reset
 

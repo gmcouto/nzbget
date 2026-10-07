@@ -428,9 +428,14 @@ static bool HexToBytesStrict(const char* hex, size_t hexLen, uint8_t* outBytes, 
 YEncDecryptor::YEncDecryptor(const std::string& password)
 	: m_password(password)
 {
-	if (sodium_init() < 0)
+	// WR-04: a libsodium initialization failure is a hard crypto error, not a
+	// condition to silently continue from — every subsequent AEAD/FF1 call
+	// would misbehave. Record it as a typed failure consumed by the Status
+	// surface (Error) instead of being swallowed.
+	m_sodiumInitFailed = sodium_init() < 0;
+	if (m_sodiumInitFailed)
 	{
-		// Failed to initialize libsodium
+		error("Failed to initialize libsodium (sodium_init() < 0); decryption is unavailable");
 	}
 }
 
@@ -543,6 +548,13 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 {
 	outPlaintext.clear();
 
+	// WR-04: sodium_init() failure recorded at construction surfaces as a
+	// typed Error on the first crypto call instead of undefined behavior.
+	if (m_sodiumInitFailed)
+	{
+		return Status::Error;
+	}
+
 	if (!EnsureMasterKey(salt))
 	{
 		return Status::Error;
@@ -595,6 +607,11 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	uint32_t* outSegmentIndex)
 {
 	outPlaintext.clear();
+
+	if (m_sodiumInitFailed)
+	{
+		return Status::Error;
+	}
 
 	const uint8_t* ctBytes = wireData;
 	size_t ctLen = wireLen;
@@ -832,6 +849,10 @@ YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
 	std::vector<uint8_t>& outWireData)
 {
 	outWireData.clear();
+	if (m_sodiumInitFailed)
+	{
+		return Status::Error;
+	}
 	if (!EnsureMasterKey(salt))
 	{
 		return Status::Error;

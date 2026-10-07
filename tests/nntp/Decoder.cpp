@@ -739,4 +739,119 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	}
 }
 
+BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
+{
+	// WR-01: a chunk ending exactly after "\r\n." must not consume the
+	// following article terminator ".\r\n" as unstuffing input — the
+	// line-start '.' held back at the chunk boundary is the terminator's dot
+	// (or the first half of a split stuffed pair), not an escape dot to strip.
+	// Feed the same article in chunks split at every position around the
+	// final CRLF boundary and require byte-identical results to the
+	// single-chunk decode.
+	const std::string password = "test123";
+	const uint32_t segmentIndex = 1;
+	const std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	YEncDecryptor encDec(password);
+
+	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = std::string(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b");
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
+
+	std::string line4Plain = "=yend size=16";
+	std::vector<uint8_t> wireLine4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+		segmentIndex, 4, false, salt.data(), wireLine4
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	fullWire.append("\r\n");
+	fullWire.append(wireLine3);
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+	fullWire.append("\r\n.\r\n");
+
+	auto decodeWhole = [&](Decoder& d)
+	{
+		d.SetPassword(password.c_str());
+		d.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+	};
+
+	auto decodeChunked = [&](Decoder& d, size_t firstChunk)
+	{
+		d.SetPassword(password.c_str());
+		d.DecodeBuffer(fullWire.data(), static_cast<int>(firstChunk));
+		d.DecodeBuffer(fullWire.data() + firstChunk,
+			static_cast<int>(fullWire.size() - firstChunk));
+	};
+
+	// Reference: single-chunk decode.
+	Decoder reference;
+	decodeWhole(reference);
+	BOOST_CHECK_EQUAL(reference.Check(), Decoder::dsFinished);
+	BOOST_CHECK_EQUAL(reference.GetSegmentIndex(), segmentIndex);
+	BOOST_CHECK_EQUAL_COLLECTIONS(
+		reference.GetDecryptedData().begin(), reference.GetDecryptedData().end(),
+		expectedPlaintext.begin(), expectedPlaintext.end());
+
+	// Chunk splits at and around the "\r\n." / terminator boundary, including
+	// the WR-01 exact cases: right after "\r\n." (before ".\r\n"), right
+	// after "\r\n.\r", and right after a lone line-start ".".
+	size_t terminatorPos = fullWire.size() - 5; // position of the final ".\r\n"
+	std::vector<size_t> splits = {
+		terminatorPos - 1,     // chunk ends after "\r\n" of =yend line
+		terminatorPos,         // chunk ends exactly after "\r\n." (WR-01 case)
+		terminatorPos + 1,     // chunk ends exactly after "\r\n.\r"
+		terminatorPos + 2,     // chunk ends exactly after "\r\n.\r\n"
+		terminatorPos - 4,     // chunk ends inside the stuffed/escape region
+	};
+	for (size_t split : splits)
+	{
+		Decoder chunked;
+		decodeChunked(chunked, split);
+		std::string label = "chunk split at byte " + std::to_string(split);
+		std::cout << "Testing " << label << " status=" << (int)chunked.Check() << std::endl;
+		BOOST_CHECK_MESSAGE(chunked.Check() == Decoder::dsFinished,
+			("chunked decode did not finish: " + label).c_str());
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			chunked.GetDecryptedData().begin(), chunked.GetDecryptedData().end(),
+			expectedPlaintext.begin(), expectedPlaintext.end());
+	}
+
+	// Also feed byte-by-byte across the last 12 bytes to stress every
+	// boundary alignment of the terminator.
+	{
+		Decoder chunked;
+		chunked.SetPassword(password.c_str());
+		size_t tailStart = fullWire.size() - 12;
+		chunked.DecodeBuffer(fullWire.data(), static_cast<int>(tailStart));
+		for (size_t i = tailStart; i < fullWire.size(); ++i)
+		{
+			chunked.DecodeBuffer(fullWire.data() + i, 1);
+		}
+		BOOST_CHECK_EQUAL(chunked.Check(), Decoder::dsFinished);
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			chunked.GetDecryptedData().begin(), chunked.GetDecryptedData().end(),
+			expectedPlaintext.begin(), expectedPlaintext.end());
+	}
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -828,7 +828,6 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 		Decoder chunked;
 		decodeChunked(chunked, split);
 		std::string label = "chunk split at byte " + std::to_string(split);
-		std::cout << "Testing " << label << " status=" << (int)chunked.Check() << std::endl;
 		BOOST_CHECK_MESSAGE(chunked.Check() == Decoder::dsFinished,
 			("chunked decode did not finish: " + label).c_str());
 		BOOST_CHECK_EQUAL_COLLECTIONS(
@@ -852,6 +851,182 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 			chunked.GetDecryptedData().begin(), chunked.GetDecryptedData().end(),
 			expectedPlaintext.begin(), expectedPlaintext.end());
 	}
+}
+
+// CR-01-R4: the restored block fed back through DecodeBuffer must not be
+// dot-unstuffed a second time — a restored yEnc data line beginning with '.'
+// (wire ct byte 0x04) or with '..' (ct bytes 0x04 0x04) must decode
+// byte-identically with the Poly1305 tag still verifying.
+BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
+{
+	const std::string password = "test123";
+	const uint32_t segmentIndex = 1;
+	const std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	YEncDecryptor encDec(password);
+	BOOST_REQUIRE(encDec.EnsureMasterKey(salt.data()));
+
+	uint8_t nonce[24];
+	BOOST_REQUIRE(encDec.DeriveBodyNonce(segmentIndex, nonce));
+
+	// Brute-force a 16-byte plaintext whose XChaCha20-Poly1305 ciphertext
+	// (first 16 bytes, tag excluded) starts with the yEnc wire byte(s) we
+	// want on the restored data line: '.' => ct byte 0x04; '..' => 0x04 0x04.
+	auto encryptPt = [&](const std::vector<uint8_t>& pt) -> std::vector<uint8_t>
+	{
+		std::vector<uint8_t> out(pt.size() + 16);
+		unsigned long long outLen = 0;
+		BOOST_REQUIRE(crypto_aead_xchacha20poly1305_ietf_encrypt(
+			out.data(), &outLen, pt.data(), pt.size(), nullptr, 0, nullptr, nonce,
+			encDec.GetCachedMasterKey().data()) == 0);
+		out.resize(outLen);
+		return out;
+	};
+
+	std::vector<uint8_t> pt(16, 0), ct16, tag;
+	bool foundSingle = false, foundDouble = false;
+	std::vector<uint8_t> ptSingle, ctSingle, tagSingle;
+	std::vector<uint8_t> ptDouble, ctDouble, tagDouble;
+	for (unsigned a = 0; a < 256 && (!foundSingle || !foundDouble); ++a)
+	{
+		pt[0] = (uint8_t)a;
+		for (unsigned b = 0; b < 256; ++b)
+		{
+			pt[1] = (uint8_t)b;
+			std::vector<uint8_t> out = encryptPt(pt);
+			std::vector<uint8_t> c(out.begin(), out.begin() + 16);
+			std::vector<uint8_t> t(out.begin() + 16, out.end());
+
+			// The yEnc wire form of ct[0] must be a bare '.' (0x2E): ct[0] == 0x04
+			// with ct[1] != 0x13 (= escape) so no '=' precedes it. For the double
+			// case ct[0] == ct[1] == 0x04 with ct[2] != 0x13.
+			bool bareSingle = c[0] == 0x04 && c[1] != 0x13;
+			bool bareDouble = c[0] == 0x04 && c[1] == 0x04 && c[2] != 0x13;
+			if (!foundSingle && bareSingle)
+			{
+				ptSingle = pt; ctSingle = c; tagSingle = t; foundSingle = true;
+			}
+			if (!foundDouble && bareDouble)
+			{
+				ptDouble = pt; ctDouble = c; tagDouble = t; foundDouble = true;
+				break;
+			}
+		}
+	}
+	BOOST_REQUIRE(foundSingle);
+	BOOST_REQUIRE(foundDouble);
+
+	auto buildWire = [&](const std::vector<uint8_t>& ct, const std::vector<uint8_t>& tag,
+		const std::vector<uint8_t>& expectedPt,
+		std::vector<uint8_t>& expectedPlaintext) -> std::string
+	{
+		YEncDecryptor encDec(password);
+		std::string line1Plain = "=ybegin line=128 size=16 name=dot.dat";
+		std::vector<uint8_t> wireLine1;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+			segmentIndex, 1, true, salt.data(), wireLine1
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		char saltHex[33], tagHex[33];
+		for (int i = 0; i < 16; ++i)
+		{
+			snprintf(saltHex + 2 * i, 3, "%02x", salt[i]);
+			snprintf(tagHex + 2 * i, 3, "%02x", tag[i]);
+		}
+		std::string line2Plain = std::string(
+			"=yencryption cipher=XChaCha20-Poly1305 salt=") + saltHex +
+			" index=00000001 tag=" + tagHex;
+		std::vector<uint8_t> wireLine2;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+			segmentIndex, 2, false, salt.data(), wireLine2
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		// yEnc-encode the ciphertext with full escaping (the simple yEncEncode
+		// helper above does not escape '='), then apply RFC 3977 §3.1.1
+		// dot-stuffing: a data line beginning with '.' gets one escape dot
+		// prepended; the consumer's single unstuffing pass must remove it.
+		std::string encLine;
+		for (uint8_t c : ct)
+		{
+			uint8_t e = (uint8_t)((c + 42) % 256);
+			if (e == 0x00 || e == 0x0A || e == 0x0D || e == 0x3D)
+			{
+				encLine += '=';
+				e = (uint8_t)((e + 64) % 256);
+			}
+			encLine += (char)e;
+		}
+		BOOST_REQUIRE_EQUAL((int)(uint8_t)encLine[0], 0x2E); // '.'-leading data line
+		std::string stuffedLine = "." + encLine;
+
+		std::string line4Plain = "=yend size=16";
+		std::vector<uint8_t> wireLine4;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+			segmentIndex, 4, false, salt.data(), wireLine4
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		std::string fullWire;
+		fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+		fullWire.append("\r\n");
+		fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+		fullWire.append("\r\n");
+		fullWire.append(stuffedLine);
+		fullWire.append("\r\n");
+		fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+		fullWire.append("\r\n.\r\n");
+
+		expectedPlaintext = expectedPt;
+		return fullWire;
+	};
+
+	// 1. Restored data line begins with '.'
+	{
+		std::vector<uint8_t> expectedPlaintext;
+		std::string wire = buildWire(ctSingle, tagSingle, ptSingle, expectedPlaintext);
+		Decoder decoder;
+		decoder.SetPassword(password.c_str());
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+		BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), segmentIndex);
+		BOOST_CHECK_EQUAL(decoder.GetSize(), 16);
+		BOOST_CHECK_EQUAL(decoder.GetEndPos(), 16);
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+			expectedPlaintext.begin(), expectedPlaintext.end());
+	}
+
+	// 2. Restored data line begins with '..' — a second unstuffing pass would
+	//    collapse it to '.' (the old CR-01-R4 bug).
+	{
+		std::vector<uint8_t> expectedPlaintext;
+		std::string wire = buildWire(ctDouble, tagDouble, ptDouble, expectedPlaintext);
+		Decoder decoder;
+		decoder.SetPassword(password.c_str());
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+			expectedPlaintext.begin(), expectedPlaintext.end());
+	}
+}
+
+// WR-01-R4: a truncated encrypted article whose =yencryption metadata already
+// failed authentication must report dsAuthFailed (provider failover tier),
+// not dsArticleIncomplete.
+BOOST_AUTO_TEST_CASE(TruncatedEncryptedArticleReportsAuthFailedTest)
+{
+	Decoder decoder;
+	// Ordinary (non-wire) mode: =ybegin followed by malformed =yencryption
+	// metadata sets m_authFailed; the article is truncated (no =yend).
+	std::string msg =
+		"=ybegin line=128 size=16 name=test.dat\r\n"
+		"=yencryption cipher=malformed salt=zz index=notahex tag=short\r\n"
+		"someciphertextthatisneverfollowedbyyend";
+	decoder.DecodeBuffer(msg.data(), static_cast<int>(msg.size()));
+	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

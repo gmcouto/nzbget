@@ -278,7 +278,7 @@ void ArticleWriter::Finish(bool success)
 	}
 
 	bool isYEncEncrypted = IsEncryptedRelease();
-	bool directWrite = ((g_Options->GetDirectWrite() && !isYEncEncrypted) || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+	bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
 
 	if (!g_Options->GetRawArticle())
 	{
@@ -419,7 +419,7 @@ void ArticleWriter::CompleteFileParts()
 
 	// 1. Gather context & configuration
 	bool isYEncEncrypted = IsEncryptedRelease();
-	bool directWrite = ((g_Options->GetDirectWrite() && !isYEncEncrypted) || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
+	bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
 	bool cached = m_fileInfo->GetCachedArticles() > 0;
 
 	std::string nzbDestDir;

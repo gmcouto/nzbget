@@ -190,6 +190,10 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	BIGNUM* bnMod = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnRadix = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnC = BN_CTX_get(bnCtx.get());
+	if (!bnNumA || !bnNumB || !bnY || !bnMod || !bnRadix || !bnC)
+	{
+		return {};
+	}
 	BN_set_word(bnRadix, radix);
 
 	for (int roundIdx = 0; roundIdx < 10; ++roundIdx)
@@ -229,6 +233,10 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 		int m = (i % 2 == 0) ? u : v;
 
 		BIGNUM* bnM = BN_CTX_get(bnCtx.get());
+		if (!bnM)
+		{
+			return {};
+		}
 		BN_set_word(bnM, m);
 		BN_exp(bnMod, bnRadix, bnM, bnCtx.get());
 
@@ -300,6 +308,10 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 	BIGNUM* bnMod = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnRadix = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnC = BN_CTX_get(bnCtx.get());
+	if (!bnNumB || !bnNumA || !bnY || !bnMod || !bnRadix || !bnC)
+	{
+		return {};
+	}
 	BN_set_word(bnRadix, radix);
 
 	for (int i = 0; i < 10; ++i)
@@ -338,6 +350,10 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 		int m = (i % 2 == 0) ? u : v;
 
 		BIGNUM* bnM = BN_CTX_get(bnCtx.get());
+		if (!bnM)
+		{
+			return {};
+		}
 		BN_set_word(bnM, m);
 		BN_exp(bnMod, bnRadix, bnM, bnCtx.get());
 

@@ -591,19 +591,22 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	if (m_encryptedWireMode)
 	{
 		size_t bodyLen = len;
-		for (size_t i = 0; i + 2 < (size_t)len; i++)
+		size_t markerOffset = len;
+		for (size_t i = 0; i < (size_t)len; i++)
 		{
-			if (buffer[i] == '\r' && buffer[i + 1] == '\n')
+			if (buffer[i] == '\n')
 			{
-				if (buffer[i + 2] == '=')
+				if (i + 2 < (size_t)len && buffer[i + 1] == '=' && buffer[i + 2] == 'y')
 				{
-					bodyLen = i;
+					bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
+					markerOffset = i + 1;
 					break;
 				}
-				if (i + 4 < (size_t)len && buffer[i + 2] == '.' &&
-					buffer[i + 3] == '\r' && buffer[i + 4] == '\n')
+				if (i + 3 < (size_t)len && buffer[i + 1] == '.' &&
+					(buffer[i + 2] == '\n' || (buffer[i + 2] == '\r' && i + 4 < (size_t)len && buffer[i + 3] == '\n')))
 				{
-					bodyLen = i;
+					bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
+					markerOffset = i + 1;
 					break;
 				}
 			}
@@ -617,12 +620,12 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 
 		int bytesWritten = static_cast<int>(static_cast<char*>(dst) - outbuf);
 
-		if (bodyLen < (size_t)len)
+		if (markerOffset < (size_t)len)
 		{
 			// Body end found: switch back to line mode to process the
 			// "=yend"/eof marker line (mirrors the raw endseq == 1 path).
 			m_lineBuf.SetLength(0);
-			m_lineBuf.Append(buffer + bodyLen + 2, len - bodyLen - 2);
+			m_lineBuf.Append(buffer + markerOffset, len - markerOffset);
 			m_body = false;
 		}
 

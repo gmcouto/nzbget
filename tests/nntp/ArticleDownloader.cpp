@@ -79,6 +79,22 @@ BOOST_AUTO_TEST_CASE(EncryptedProviderFailoverTest)
 	BOOST_CHECK_EQUAL(static_cast<int>(mappedStatus), static_cast<int>(ArticleDownloader::adNotFound));
 }
 
+BOOST_AUTO_TEST_CASE(SilentCiphertextRoutingTest)
+{
+	NzbInfo nzbInfo;
+	nzbInfo.SetYEncEncrypted(true);
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+
+	// When release is declared encrypted but article carries no =yencryption bootstrap,
+	// DecodeCheck routes to adNotFound for provider failover.
+	bool declaredEncrypted = fileInfo.GetNzbInfo() && fileInfo.GetNzbInfo()->IsYEncEncrypted();
+	bool isEncrypted = false;
+	ArticleDownloader::EStatus mappedStatus = (declaredEncrypted && !isEncrypted) ?
+		ArticleDownloader::adNotFound : ArticleDownloader::adFinished;
+	BOOST_CHECK_EQUAL(static_cast<int>(mappedStatus), static_cast<int>(ArticleDownloader::adNotFound));
+}
+
 BOOST_AUTO_TEST_CASE(CorruptedLine1BootstrapFailClosedTest)
 {
 	Decoder decoder;

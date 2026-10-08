@@ -133,7 +133,10 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 	// unstuffing pass again would corrupt yEnc data lines that legitimately
 	// begin with '.', so such callers pass alreadyUnstuffed=true. Exactly one
 	// unstuffing pass per byte of article, ever.
-	if (!alreadyUnstuffed)
+	// For ordinary (non-wire) articles, rapidyenc_decode_incremental handles
+	// raw NNTP dot-unstuffing in situ; running UnstuffInPlace here on ordinary
+	// articles caused double-unstuffing and corrupted data lines starting with '.'.
+	if (m_encryptedWireMode && !alreadyUnstuffed)
 	{
 		UnstuffInPlace(buffer, len);
 	}
@@ -173,12 +176,17 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				}
 				else
 				{
+					std::string candidateLine1 = line1;
+					if (!candidateLine1.empty() && candidateLine1[0] == '.')
+					{
+						candidateLine1.erase(0, 1);
+					}
 					std::vector<uint8_t> ptLine1;
 					std::vector<uint8_t> salt1;
 					uint32_t extractedIndex = 0;
 					auto st = m_decryptor->DecryptControlLine(
-						reinterpret_cast<const uint8_t*>(line1.data()),
-						line1.size(),
+						reinterpret_cast<const uint8_t*>(candidateLine1.data()),
+						candidateLine1.size(),
 						0,
 						1,
 						true,
@@ -191,6 +199,9 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 						m_encryptedWireMode = true;
 						m_format = efYenc;
 						m_segmentIndex = extractedIndex;
+						int wireLen = static_cast<int>(m_wireBuffer.size());
+						UnstuffInPlace(m_wireBuffer.data(), wireLen);
+						m_wireBuffer.resize(wireLen);
 					}
 					else
 					{

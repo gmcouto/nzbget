@@ -1029,4 +1029,52 @@ BOOST_AUTO_TEST_CASE(TruncatedEncryptedArticleReportsAuthFailedTest)
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
+BOOST_AUTO_TEST_CASE(OrdinaryYencLeadingDotTest)
+{
+	const std::string plainData = "\x04HelloUsenet";
+	std::string enc = yEncEncode(plainData);
+	BOOST_REQUIRE_EQUAL(static_cast<int>(static_cast<unsigned char>(enc[0])), 0x2E); // '.'
+
+	Crc32 crc;
+	crc.Append(reinterpret_cast<uchar*>(const_cast<char*>(plainData.data())), static_cast<uint32>(plainData.size()));
+	uint32 expectedCrc = crc.Finish();
+
+	std::stringstream endOss;
+	endOss << "=yend size=" << plainData.size() << " crc32=" << std::hex << std::setw(8) << std::setfill('0') << expectedCrc;
+
+	std::string wire;
+	wire += "=ybegin line=128 size=" + std::to_string(plainData.size()) + " name=dot.dat\r\n";
+	// Dot-stuffed wire data line (leading '.' escaped as '..'):
+	wire += "." + enc + "\r\n";
+	wire += endOss.str() + "\r\n";
+	wire += ".\r\n";
+
+	// 1. Ordinary unencrypted download without password configured
+	{
+		Decoder decoder;
+		decoder.SetCrcCheck(true);
+		std::string buf = wire;
+		int len = decoder.DecodeBuffer(buf.data(), static_cast<int>(buf.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+		BOOST_CHECK_EQUAL(decoder.GetSize(), static_cast<int64>(plainData.size()));
+		BOOST_CHECK_EQUAL(decoder.GetCalculatedCrc(), expectedCrc);
+		BOOST_CHECK_EQUAL(len, static_cast<int>(plainData.size()));
+		BOOST_CHECK_EQUAL(buf.substr(0, len), plainData);
+	}
+
+	// 2. Ordinary unencrypted article when password is set on the decryptor (e.g. from NZB metadata)
+	{
+		Decoder decoder;
+		decoder.SetPassword("somepassword");
+		decoder.SetCrcCheck(true);
+		std::string buf = wire;
+		int len = decoder.DecodeBuffer(buf.data(), static_cast<int>(buf.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+		BOOST_CHECK_EQUAL(decoder.GetSize(), static_cast<int64>(plainData.size()));
+		BOOST_CHECK_EQUAL(decoder.GetCalculatedCrc(), expectedCrc);
+		BOOST_CHECK_EQUAL(len, static_cast<int>(plainData.size()));
+		BOOST_CHECK_EQUAL(buf.substr(0, len), plainData);
+	}
+}
+
 BOOST_AUTO_TEST_SUITE_END()

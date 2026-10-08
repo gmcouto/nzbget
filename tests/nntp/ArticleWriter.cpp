@@ -408,13 +408,13 @@ BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 	articleInfo.SetSize(32);
 
 	// Simulate the DecodeCheck silent-ciphertext path: declaredEncrypted &&
-	// !m_decoder.IsEncrypted() → return adFailed before writer Start().
+	// !m_decoder.IsEncrypted() → return adNotFound before writer Start().
 	// The writer must therefore never touch disk; assert the mapping too.
 	const bool declaredEncrypted = nzbInfo.IsYEncEncrypted();
 	const bool decoderEncrypted = false; // no bootstrap on the wire
 	ArticleDownloader::EStatus mapped = declaredEncrypted && !decoderEncrypted ?
-		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
-	BOOST_CHECK_EQUAL(static_cast<int>(mapped), static_cast<int>(ArticleDownloader::adFailed));
+		ArticleDownloader::adNotFound : ArticleDownloader::adFinished;
+	BOOST_CHECK_EQUAL(static_cast<int>(mapped), static_cast<int>(ArticleDownloader::adNotFound));
 
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);

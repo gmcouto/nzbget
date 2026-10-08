@@ -558,6 +558,25 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				m_articleFilename = m_decoder.GetArticleFilename();
 			}
 
+			// T6 silent-ciphertext fallback fix (Body Std v1.2 §7): if the NZB
+			// declared this release yenc_encrypted but the article carried no
+			// =yencryption bootstrap (body-only/unencrypted wire), m_decoder
+			// never entered encrypted mode — the decoded bytes are ciphertext
+			// (or garbage), not authenticated plaintext. Treat as provider
+			// corruption → adNotFound failover; commit nothing.
+			bool declaredEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
+				m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
+			if (declaredEncrypted && !m_decoder.IsEncrypted())
+			{
+				if (m_writingStarted)
+				{
+					m_articleWriter.DiscardStagedData();
+				}
+				detail("Article %s: encrypted release without =yencryption bootstrap, "
+					"treating as provider corruption", *m_infoName);
+				return adNotFound;
+			}
+
 			// T4 (Body Std v1.2 §6): never persist the ciphertext CRC into a
 			// verification path (ParChecker combines it → false quick-check
 			// mismatches). Skip SetCrc for encrypted segments so ParChecker
@@ -571,21 +590,6 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 			bool isEncrypted = m_decoder.IsEncrypted();
 			if (isEncrypted)
 			{
-				// T6 silent-ciphertext fallback fix (Body Std v1.2 §7): if the NZB
-				// declared this release yenc_encrypted but the article carried no
-				// =yencryption bootstrap (body-only/unencrypted wire), m_decoder
-				// never entered encrypted mode — the decoded bytes are ciphertext
-				// (or garbage), not authenticated plaintext. Treat as provider
-				// corruption → adFailed failover; commit nothing.
-				bool declaredEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-					m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
-				if (declaredEncrypted && !m_decoder.IsEncrypted())
-				{
-					detail("Article %s: encrypted release without =yencryption bootstrap, "
-						"treating as provider corruption", *m_infoName);
-					return adFailed;
-				}
-
 				// T3 dataflow: persist the bootstrap-extracted index only AFTER
 				// authentication succeeded (Check() == dsFinished) — on auth
 				// failure no index metadata leaks into the queue model.

@@ -1077,4 +1077,31 @@ BOOST_AUTO_TEST_CASE(OrdinaryYencLeadingDotTest)
 	}
 }
 
+BOOST_AUTO_TEST_CASE(EmbeddedTerminatorNotPrematurelyCompletedTest)
+{
+	const std::string password = "test123";
+	const uint32_t segmentIndex = 1;
+	const std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	YEncDecryptor encDec(password);
+
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	// Build chunk 1 with valid encrypted line 1, followed by an embedded terminator and trailing data:
+	std::string chunk1;
+	chunk1.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	chunk1.append("\r\n\r\n.\r\nintermediate_data_after_terminator\r\n");
+
+	Decoder decoder;
+	decoder.SetPassword(password.c_str());
+	decoder.DecodeBuffer(chunk1.data(), static_cast<int>(chunk1.size()));
+
+	// An embedded terminator mid-stream must NOT complete the article prematurely:
+	BOOST_CHECK_EQUAL(decoder.GetEof(), false);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

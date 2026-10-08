@@ -190,7 +190,7 @@ void ArticleDownloader::Run()
 
 		if (connected && status == adFailed)
 		{
-			remainedRetries = m_authFailed ? 0 : remainedRetries - 1;
+			remainedRetries--;
 		}
 
 		bool optionalBlocked = false;

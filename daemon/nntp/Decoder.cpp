@@ -235,12 +235,10 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 			bool complete =
 				// Whole-buffer terminator (".\r\n" or ".\n")
 				m_wireBuffer == ".\r\n" || m_wireBuffer == ".\n" ||
-				// Terminator embedded anywhere in the accumulated block.
-				// Subsumes the suffix-only forms: "\r\n.\r\n" / "\n.\n" /
-				// "\n.\r\n" at the very end already match these scans.
-				m_wireBuffer.find("\r\n.\r\n") != std::string::npos ||
-				m_wireBuffer.find("\n.\n") != std::string::npos ||
-				m_wireBuffer.find("\n.\r\n") != std::string::npos;
+				// Suffix terminator check per NNTP wire framing
+				m_wireBuffer.ends_with("\r\n.\r\n") ||
+				m_wireBuffer.ends_with("\n.\n") ||
+				m_wireBuffer.ends_with("\n.\r\n");
 
 			if (complete)
 			{

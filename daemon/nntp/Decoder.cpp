@@ -592,22 +592,30 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	{
 		size_t bodyLen = len;
 		size_t markerOffset = len;
-		for (size_t i = 0; i < (size_t)len; i++)
+		if (len >= 2 && buffer[0] == '=' && buffer[1] == 'y')
 		{
-			if (buffer[i] == '\n')
+			bodyLen = 0;
+			markerOffset = 0;
+		}
+		else
+		{
+			for (size_t i = 0; i < (size_t)len; i++)
 			{
-				if (i + 2 < (size_t)len && buffer[i + 1] == '=' && buffer[i + 2] == 'y')
+				if (buffer[i] == '\n')
 				{
-					bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
-					markerOffset = i + 1;
-					break;
-				}
-				if (i + 3 < (size_t)len && buffer[i + 1] == '.' &&
-					(buffer[i + 2] == '\n' || (buffer[i + 2] == '\r' && i + 4 < (size_t)len && buffer[i + 3] == '\n')))
-				{
-					bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
-					markerOffset = i + 1;
-					break;
+					if (i + 2 < (size_t)len && buffer[i + 1] == '=' && buffer[i + 2] == 'y')
+					{
+						bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
+						markerOffset = i + 1;
+						break;
+					}
+					if (i + 3 < (size_t)len && buffer[i + 1] == '.' &&
+						(buffer[i + 2] == '\n' || (buffer[i + 2] == '\r' && i + 4 < (size_t)len && buffer[i + 3] == '\n')))
+					{
+						bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
+						markerOffset = i + 1;
+						break;
+					}
 				}
 			}
 		}

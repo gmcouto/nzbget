@@ -228,6 +228,11 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				m_wireBuffer.clear();
 				alreadyBuffered = true;
 			}
+			else
+			{
+				// Line 1 is still being accumulated in m_wireBuffer
+				return 0;
+			}
 		}
 
 		if (m_encryptedWireMode)

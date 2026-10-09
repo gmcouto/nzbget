@@ -227,6 +227,11 @@ bool ArticleWriter::CommitAuthenticatedData(const uint8_t* data, size_t length, 
 	m_articleOffset = offset;
 	m_articlePtr = static_cast<int>(length);
 
+	if (length == 0)
+	{
+		return true;
+	}
+
 	if (m_articleData.GetData())
 	{
 		memcpy(m_articleData.GetData(), data, length);

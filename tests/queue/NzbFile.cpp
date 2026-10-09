@@ -204,6 +204,12 @@ namespace
 		    << "</file>\n"
 		    << "</nzb>\n";
 	}
+
+	void WriteRawNzb(const fs::path& filePath, std::string_view content)
+	{
+		std::ofstream out(filePath.string());
+		out << content;
+	}
 }
 
 BOOST_AUTO_TEST_CASE(NzbFileMetaParsingTest)
@@ -326,6 +332,224 @@ BOOST_AUTO_TEST_CASE(BuildFinalDirNameUniqueIdTest)
 
 	// Both empty downloads must have different final directories
 	BOOST_CHECK_NE(finalDir1, finalDir2);
+}
+
+BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
+{
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	// 1. Valid clean NZB 1.1 encrypted release with yenc_encrypted=true
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"[1/2] - &quot;f.bin&quot; yEnc (1/2)\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"<segment bytes=\"100\" number=\"2\">msg2@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "valid_clean.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		BOOST_CHECK(info->HasPassword());
+		BOOST_CHECK_EQUAL(info->GetPassword(), "secret");
+		auto articles = info->GetFileList()->front()->GetArticles();
+		BOOST_REQUIRE_EQUAL(articles->size(), 2U);
+		BOOST_CHECK(info->GetFileList()->front()->HasFileOrdinal());
+		BOOST_CHECK_EQUAL(info->GetFileList()->front()->GetFileOrdinal().value(), 1U);
+		BOOST_CHECK_EQUAL(info->GetFileList()->front()->GetTotalFiles().value(), 2U);
+	}
+
+	// 2. Valid clean NZB with encryption=combined
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">combined_pw</meta><meta type=\"encryption\">combined</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"[1/1] - &quot;single.bin&quot; yEnc (1/1)\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "combined_enc.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+		BOOST_CHECK_EQUAL(info->GetPassword(), "combined_pw");
+	}
+
+	// 3. Arbitrary non-numbered subjects with yenc_encrypted metadata
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"&quot;random_movie.mkv&quot;\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "arbitrary_sub.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// 4. Archive-password-only release (password without yenc_encrypted meta)
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">archive_secret</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"archive.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "archive_only.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+		BOOST_CHECK_EQUAL(info->GetPassword(), "archive_secret");
+	}
+
+	// 5. Unencrypted release without password
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<file poster=\"p\" date=\"100\" subject=\"unencrypted.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments>\n"
+			"<segment bytes=\"100\" number=\"1\">msg1@test</segment>\n"
+			"</segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "unencrypted.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+		BOOST_CHECK(!info->HasPassword());
+	}
+}
+
+BOOST_AUTO_TEST_CASE(PasswordControlCharacterSanitizationTest)
+{
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	const std::string xml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<head><meta type=\"password\">\r\n\t  secret_password  \r\n</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"sanitized.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	auto [ok, info] = parseXml(xml, "pwd_trim.nzb");
+	BOOST_REQUIRE(ok);
+	BOOST_REQUIRE(info);
+	BOOST_CHECK_EQUAL(info->GetPassword(), "secret_password");
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
+{
+	// T5 structural tier: yenc_encrypted release without password meta must fail
+	// at parse/queue time (METADATA_VALIDATION) — no server contact ever happens.
+	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	const std::string xml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<head><meta type=\"yenc_encrypted\">true</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"nopass.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	auto [ok, info] = parseXml(xml, "enc_nopwd.nzb");
+	BOOST_CHECK(!ok);
+	BOOST_REQUIRE(info);
+	bool foundValidation = false;
+	bool foundAuthFailure = false;
+	if (info)
+	{
+		for (Message& message : info->GuardCachedMessages())
+		{
+			if (message.GetKind() == Message::mkError &&
+				strstr(message.GetText(), "METADATA_VALIDATION"))
+			{
+				foundValidation = true;
+			}
+			// Structural abort must never be classified as a server/auth failure.
+			if (strstr(message.GetText(), "dsAuthFailed"))
+			{
+				foundAuthFailure = true;
+			}
+		}
+	}
+	BOOST_CHECK(foundValidation);
+	BOOST_CHECK(!foundAuthFailure);
+
+	// Legacy segmentIndex attributes are ignored (T3), not fatal:
+	auto parseLegacy = [](std::string_view xml, const std::string& filename) -> bool
+	{
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		fs::remove(tempNzb);
+		return ok;
+	};
+	const std::string legacyXml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"legacy.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"malformed-not-a-number\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	BOOST_CHECK(parseLegacy(legacyXml, "legacy_ignored.nzb"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

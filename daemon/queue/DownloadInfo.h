@@ -26,6 +26,7 @@
 #include <atomic>
 #include <algorithm>
 #include <string>
+#include <optional>
 #include "NString.h"
 #include "Container.h"
 #include "Observer.h"
@@ -105,12 +106,17 @@ public:
 	void SetResultFilename(const char* resultFilename) { m_resultFilename = resultFilename; }
 	uint32 GetCrc() { return m_crc; }
 	void SetCrc(uint32 crc) { m_crc = crc; }
+	std::optional<uint32> GetSegmentIndex() const { return m_segmentIndex; }
+	void SetSegmentIndex(std::optional<uint32> segmentIndex) { m_segmentIndex = segmentIndex; }
+	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
+	bool HasSegmentIndex() const { return m_segmentIndex.has_value(); }
 
 private:
 	std::unique_ptr<SegmentData> m_segmentContent;
 	std::atomic<int64> m_segmentOffset{0};
 	std::atomic<int> m_segmentSize{0};
 	std::atomic<uint32> m_crc{0};
+	std::optional<uint32> m_segmentIndex;
 	CString m_messageId;
 	CString m_resultFilename;
 	EStatus m_status = aiUndefined;
@@ -147,6 +153,20 @@ public:
 	void SetFilename(const char* filename) { m_filename = filename ? filename : ""; }
 	void SetOrigname(const char* origname) { m_origname = origname; }
 	const char* GetOrigname() { return m_origname; }
+	std::optional<uint32> GetFileOrdinal() const { return m_fileOrdinal; }
+	void SetFileOrdinal(std::optional<uint32> fileOrdinal) { m_fileOrdinal = fileOrdinal; }
+	void SetFileOrdinal(uint32 fileOrdinal) { m_fileOrdinal = fileOrdinal; }
+	bool HasFileOrdinal() const { return m_fileOrdinal.has_value(); }
+	std::optional<uint32> GetTotalFiles() const { return m_totalFiles; }
+	void SetTotalFiles(std::optional<uint32> totalFiles) { m_totalFiles = totalFiles; }
+	void SetTotalFiles(uint32 totalFiles) { m_totalFiles = totalFiles; }
+	bool HasTotalFiles() const { return m_totalFiles.has_value(); }
+	std::optional<uint32> GetSegmentIndexBase() const { return m_segmentIndexBase; }
+	void SetSegmentIndexBase(std::optional<uint32> segmentIndexBase) { m_segmentIndexBase = segmentIndexBase; }
+	void SetSegmentIndexBase(uint32 segmentIndexBase) { m_segmentIndexBase = segmentIndexBase; }
+	bool HasSegmentIndexBase() const { return m_segmentIndexBase.has_value(); }
+	bool GetDuplicateArticles() const { return m_duplicateArticles; }
+	void SetDuplicateArticles(bool duplicateArticles) { m_duplicateArticles = duplicateArticles; }
 	void MakeValidFilename();
 	bool GetFilenameConfirmed() { return m_filenameConfirmed; }
 	void SetFilenameConfirmed(bool filenameConfirmed) { m_filenameConfirmed = filenameConfirmed; }
@@ -251,6 +271,10 @@ private:
 	CString m_parSetId;
 	bool m_flushLocked = false;
 	std::string m_hardLinkPath;
+	std::optional<uint32> m_fileOrdinal;
+	std::optional<uint32> m_totalFiles;
+	std::optional<uint32> m_segmentIndexBase;
+	bool m_duplicateArticles = false;
 
 	static int m_idGen;
 	static int m_idMax;
@@ -306,8 +330,8 @@ class NzbParameter
 public:
 	NzbParameter(const char* name, const char* value) :
 		m_name(name), m_value(value) {}
-	const char* GetName() { return m_name; }
-	const char* GetValue() { return m_value; }
+	const char* GetName() const { return m_name; }
+	const char* GetValue() const { return m_value; }
 
 private:
 	CString m_name;
@@ -325,6 +349,7 @@ class NzbParameterList : public NzbParameterListBase
 public:
 	void SetParameter(const char* name, const char* value);
 	NzbParameter* Find(const char* name);
+	const NzbParameter* Find(const char* name) const;
 	void CopyFrom(NzbParameterList* sourceParameters);
 };
 
@@ -618,6 +643,31 @@ public:
 	void SetAddUrlPaused(bool addUrlPaused) { m_addUrlPaused = addUrlPaused; }
 	FileList* GetFileList() { return &m_fileList; }
 	NzbParameterList* GetParameters() { return &m_ppParameters; }
+	const NzbParameterList* GetParameters() const { return &m_ppParameters; }
+	const char* GetParameter(const char* name) const
+	{
+		const NzbParameter* param = m_ppParameters.Find(name);
+		return param ? param->GetValue() : nullptr;
+	}
+	bool HasPassword() const
+	{
+		const char* pwd = GetParameter("*Unpack:Password");
+		return pwd != nullptr && pwd[0] != '\0';
+	}
+	const char* GetPassword() const
+	{
+		const char* pwd = GetParameter("*Unpack:Password");
+		return (pwd && pwd[0] != '\0') ? pwd : "";
+	}
+	bool IsYEncEncrypted() const
+	{
+		const char* enc = GetParameter("*Unpack:YEncEncrypted");
+		return enc != nullptr && !strcasecmp(enc, "yes");
+	}
+	void SetYEncEncrypted(bool encrypted)
+	{
+		m_ppParameters.SetParameter("*Unpack:YEncEncrypted", encrypted ? "yes" : "");
+	}
 	ScriptStatusList* GetScriptStatuses() { return &m_scriptStatuses; }
 	ServerStatList* GetServerStats() { return &m_serverStats; }
 	ServerStatList* GetCurrentServerStats() { return &m_currentServerStats; }

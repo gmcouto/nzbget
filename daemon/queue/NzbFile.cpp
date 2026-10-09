@@ -21,6 +21,7 @@
 
 
 #include "nzbget.h"
+#include <charconv>
 #include "NzbFile.h"
 #include "Log.h"
 #include "DownloadInfo.h"
@@ -55,6 +56,10 @@ ArticleInfo* NzbFile::AddArticle(FileInfo* fileInfo, std::unique_ptr<ArticleInfo
 	if (index >= fileInfo->GetArticles()->size())
 	{
 		fileInfo->GetArticles()->resize(index + 1);
+	}
+	else if ((*fileInfo->GetArticles())[index])
+	{
+		fileInfo->SetDuplicateArticles(true);
 	}
 
 	(*fileInfo->GetArticles())[index] = std::move(articleInfo);
@@ -244,8 +249,109 @@ void NzbFile::CalcHashes()
 	m_nzbInfo->SetFilteredContentHash(filteredContentHash);
 }
 
-void NzbFile::ProcessFiles()
+bool NzbFile::ParseFileCounter(std::string_view subject, uint32& fileOrdinal, uint32& totalFiles)
 {
+	if (subject.empty() || subject.front() != '[')
+	{
+		return false;
+	}
+
+	size_t bracketClose = subject.find(']');
+	if (bracketClose == std::string_view::npos)
+	{
+		return false;
+	}
+
+	std::string_view after = subject.substr(bracketClose + 1);
+	if (!after.starts_with(" - ") && !after.starts_with(" "))
+	{
+		return false;
+	}
+
+	std::string_view counter = subject.substr(1, bracketClose - 1);
+	size_t slashPos = counter.find('/');
+	if (slashPos == std::string_view::npos || counter.rfind('/') != slashPos)
+	{
+		return false;
+	}
+
+	std::string_view nStr = counter.substr(0, slashPos);
+	std::string_view mStr = counter.substr(slashPos + 1);
+	if (nStr.empty() || mStr.empty())
+	{
+		return false;
+	}
+
+	for (char c : nStr)
+	{
+		if (c < '0' || c > '9') return false;
+	}
+	for (char c : mStr)
+	{
+		if (c < '0' || c > '9') return false;
+	}
+
+	uint32 n = 0;
+	uint32 m = 0;
+	auto resN = std::from_chars(nStr.data(), nStr.data() + nStr.size(), n);
+	if (resN.ec != std::errc{} || resN.ptr != nStr.data() + nStr.size())
+	{
+		return false;
+	}
+
+	auto resM = std::from_chars(mStr.data(), mStr.data() + mStr.size(), m);
+	if (resM.ec != std::errc{} || resM.ptr != mStr.data() + mStr.size())
+	{
+		return false;
+	}
+
+	if (n == 0 || m == 0 || n > m)
+	{
+		return false;
+	}
+
+	fileOrdinal = n;
+	totalFiles = m;
+	return true;
+}
+
+bool NzbFile::ValidateSegmentIdentities()
+{
+	// T3 (Body Std v1.2 §8): readers MUST NOT consume segmentIndex XML attributes.
+	// Segment identity comes solely from the wire Line 1 bootstrap at download time;
+	// per-article segmentIndex stays unset until the decryptor extracts it.
+	m_nzbInfo->SetYEncEncrypted(m_yencEncryptedMeta);
+
+	return true;
+}
+
+bool NzbFile::ValidateEncryptedReleasePassword()
+{
+	// T5 structural tier (METADATA_VALIDATION): an encrypted release without a
+	// password can never authenticate. Abort at queue time — before any server
+	// contact — instead of burning every provider with per-article auth failures.
+	if (m_yencEncryptedMeta && m_password.empty())
+	{
+		m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
+			"Error parsing nzb-file %s: METADATA_VALIDATION: yenc_encrypted release has no password",
+			FileSystem::BaseFileName(m_fileName.c_str())));
+		return false;
+	}
+	return true;
+}
+
+bool NzbFile::ProcessFiles()
+{
+	if (m_password.empty())
+	{
+		ReadPasswordFromFilename();
+	}
+
+	if (!ValidateSegmentIdentities() || !ValidateEncryptedReleasePassword())
+	{
+		return false;
+	}
+
 	BuildFilenames();
 
 	for (FileInfo* fileInfo : m_nzbInfo->GetFileList())
@@ -304,11 +410,19 @@ void NzbFile::ProcessFiles()
 	// Sanitize control characters (\r, \n, \t, etc.) to prevent
 	// line desynchronization in the line-based DiskState file format.
 	Util::SanitizeLine(m_category);
+	Util::SanitizeLine(m_password);
+
+	if (!m_password.empty() && m_nzbInfo)
+	{
+		m_nzbInfo->GetParameters()->SetParameter("*Unpack:Password", m_password.c_str());
+	}
 
 	if (!m_metaName.empty() && m_nzbInfo)
 	{
 		m_nzbInfo->SetMetaName(m_metaName);
 	}
+
+	return true;
 }
 /*
 * Attempt to Read the Password from the Filename encoded in {{ Bracets }}
@@ -324,7 +438,10 @@ void NzbFile::ReadPasswordFromFilename()
 	if (end == std::string::npos) return;
 
 	if (start < end)
-	    m_password = m_fileName.substr(start, end - start);
+	{
+		m_password = m_fileName.substr(start, end - start);
+		Util::SanitizeLine(m_password);
+	}
 }
 
 bool NzbFile::Parse()
@@ -354,7 +471,10 @@ bool NzbFile::Parse()
 		return false;
 	}
 
-	ProcessFiles();
+	if (!ProcessFiles())
+	{
+		return false;
+	}
 
 	return true;
 }
@@ -377,15 +497,22 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			return;
 		}
 
-		for (int i = 0; atts[i]; i += 2)
+		for (int i = 0; atts[i] && atts[i + 1]; i += 2)
 		{
 			const char* attrname = atts[i];
 			const char* attrvalue = atts[i + 1];
 			if (!strcmp("subject", attrname))
 			{
 				m_fileInfo->SetSubject(attrvalue);
+				uint32 fileOrdinal = 0;
+				uint32 totalFiles = 0;
+				if (ParseFileCounter(attrvalue, fileOrdinal, totalFiles))
+				{
+					m_fileInfo->SetFileOrdinal(fileOrdinal);
+					m_fileInfo->SetTotalFiles(totalFiles);
+				}
 			}
-			if (!strcmp("date", attrname))
+			if (!strcmp("date", attrname) && attrvalue)
 			{
 				m_fileInfo->SetTime(atoi(attrvalue));
 			}
@@ -408,18 +535,19 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 		int64 lsize = -1;
 		int partNumber = -1;
 
-		for (int i = 0; atts[i]; i += 2)
+		for (int i = 0; atts[i] && atts[i + 1]; i += 2)
 		{
 			const char* attrname = atts[i];
 			const char* attrvalue = atts[i + 1];
-			if (!strcmp("bytes", attrname))
+			if (!strcmp("bytes", attrname) && attrvalue)
 			{
 				lsize = atol(attrvalue);
 			}
-			if (!strcmp("number", attrname))
+			if (!strcmp("number", attrname) && attrvalue)
 			{
 				partNumber = atol(attrvalue);
 			}
+			// segmentIndex attributes (if present) are ignored per Body Std v1.2 §8.
 		}
 
 		if (partNumber > 0)
@@ -437,6 +565,8 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 		m_hasCategory = false;
 		m_hasName = false;
 		m_hasTitle = false;
+		m_hasYEncEncrypted = false;
+		m_hasEncryption = false;
 
 		if (!atts)
 		{
@@ -452,6 +582,8 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 				else if (!strcasecmp("category", atts[i + 1])) m_hasCategory = true;
 				else if (!strcasecmp("name", atts[i + 1])) m_hasName = true;
 				else if (!strcasecmp("title", atts[i + 1])) m_hasTitle = true;
+				else if (!strcasecmp("yenc_encrypted", atts[i + 1])) m_hasYEncEncrypted = true;
+				else if (!strcasecmp("encryption", atts[i + 1])) m_hasEncryption = true;
 			}
 		}
 	}
@@ -492,6 +624,7 @@ void NzbFile::Parse_EndElement(const char *name)
 	else if (!strcmp("meta", name) && m_hasPassword)
 	{
 		m_password = m_tagContent;
+		Util::SanitizeLine(m_password);
 	}
 	else if (!strcmp("meta", name) && m_hasCategory)
 	{
@@ -504,6 +637,24 @@ void NzbFile::Parse_EndElement(const char *name)
 	else if (!strcmp("meta", name) && m_hasTitle)
 	{
 		m_metaTitle = m_tagContent;
+	}
+	else if (!strcmp("meta", name) && m_hasYEncEncrypted)
+	{
+		std::string val = *m_tagContent;
+		Util::Trim(val);
+		if (!strcasecmp(val.c_str(), "true") || !strcasecmp(val.c_str(), "yes") || val == "1")
+		{
+			m_yencEncryptedMeta = true;
+		}
+	}
+	else if (!strcmp("meta", name) && m_hasEncryption)
+	{
+		std::string val = *m_tagContent;
+		Util::Trim(val);
+		if (!strcasecmp(val.c_str(), "combined") || !strcasecmp(val.c_str(), "true") || !strcasecmp(val.c_str(), "yes") || val == "1")
+		{
+			m_yencEncryptedMeta = true;
+		}
 	}
 
 	m_currentElement.clear();

@@ -605,8 +605,11 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 	BOOST_CHECK(parseLegacy(legacyXml, "legacy_ignored.nzb"));
 }
 
-BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameSucceedsTest)
+BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameFailsValidationTest)
 {
+	// Password source constraint: downloaders use only <meta type="password">
+	// from the NZB for encrypted wire decryption. Filename passwords are not
+	// used for encrypted wire validation.
 	const fs::path tempNzb = fs::temp_directory_path() / "Release {{filename_secret}}.nzb";
 	const std::string xml =
 		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -623,9 +626,18 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameSucceedsTest)
 	std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
 	fs::remove(tempNzb);
 
-	BOOST_CHECK(ok);
+	BOOST_CHECK(!ok);
 	BOOST_REQUIRE(nzbInfo);
-	BOOST_CHECK_EQUAL(nzbInfo->GetPassword(), "filename_secret");
+	bool foundValidation = false;
+	for (Message& message : nzbInfo->GuardCachedMessages())
+	{
+		if (message.GetKind() == Message::mkError &&
+			strstr(message.GetText(), "METADATA_VALIDATION"))
+		{
+			foundValidation = true;
+		}
+	}
+	BOOST_CHECK(foundValidation);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

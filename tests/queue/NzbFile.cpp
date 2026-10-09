@@ -605,4 +605,27 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 	BOOST_CHECK(parseLegacy(legacyXml, "legacy_ignored.nzb"));
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameSucceedsTest)
+{
+	const fs::path tempNzb = fs::temp_directory_path() / "Release {{filename_secret}}.nzb";
+	const std::string xml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+		"<head><meta type=\"yenc_encrypted\">true</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"test.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	WriteRawNzb(tempNzb, xml);
+	NzbFile nzbFile(tempNzb.string().c_str(), "");
+	bool ok = nzbFile.Parse();
+	std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+	fs::remove(tempNzb);
+
+	BOOST_CHECK(ok);
+	BOOST_REQUIRE(nzbInfo);
+	BOOST_CHECK_EQUAL(nzbInfo->GetPassword(), "filename_secret");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

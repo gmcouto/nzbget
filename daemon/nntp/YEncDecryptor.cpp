@@ -190,7 +190,8 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	BIGNUM* bnMod = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnRadix = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnC = BN_CTX_get(bnCtx.get());
-	if (!bnNumA || !bnNumB || !bnY || !bnMod || !bnRadix || !bnC)
+	BIGNUM* bnM = BN_CTX_get(bnCtx.get());
+	if (!bnNumA || !bnNumB || !bnY || !bnMod || !bnRadix || !bnC || !bnM)
 	{
 		return {};
 	}
@@ -232,11 +233,6 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 		BN_bin2bn(S.data(), d, bnY);
 		int m = (i % 2 == 0) ? u : v;
 
-		BIGNUM* bnM = BN_CTX_get(bnCtx.get());
-		if (!bnM)
-		{
-			return {};
-		}
 		BN_set_word(bnM, m);
 		BN_exp(bnMod, bnRadix, bnM, bnCtx.get());
 
@@ -308,7 +304,8 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 	BIGNUM* bnMod = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnRadix = BN_CTX_get(bnCtx.get());
 	BIGNUM* bnC = BN_CTX_get(bnCtx.get());
-	if (!bnNumB || !bnNumA || !bnY || !bnMod || !bnRadix || !bnC)
+	BIGNUM* bnM = BN_CTX_get(bnCtx.get());
+	if (!bnNumB || !bnNumA || !bnY || !bnMod || !bnRadix || !bnC || !bnM)
 	{
 		return {};
 	}
@@ -349,11 +346,6 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 		BN_bin2bn(S.data(), d, bnY);
 		int m = (i % 2 == 0) ? u : v;
 
-		BIGNUM* bnM = BN_CTX_get(bnCtx.get());
-		if (!bnM)
-		{
-			return {};
-		}
 		BN_set_word(bnM, m);
 		BN_exp(bnMod, bnRadix, bnM, bnCtx.get());
 
@@ -957,7 +949,15 @@ bool YEncDecryptor::RestoreControlLines(
 			newline ? (crlf ? std::string_view("\r\n", 2) : std::string_view("\n", 1)) : std::string_view()});
 		cursor = newline ? newline + 1 : end;
 	}
+	while (!lines.empty() && lines.back().len == 0)
+	{
+		lines.pop_back();
+	}
 	if (!lines.empty() && lines.back().len == 1 && lines.back().data[0] == '.')
+	{
+		lines.pop_back();
+	}
+	while (!lines.empty() && lines.back().len == 0)
 	{
 		lines.pop_back();
 	}

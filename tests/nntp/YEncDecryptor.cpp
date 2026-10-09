@@ -279,6 +279,11 @@ BOOST_AUTO_TEST_CASE(NzbInfoPasswordAccessorTest)
 
 BOOST_AUTO_TEST_CASE(DirectWriteBypassForPasswordTest)
 {
+	Options::CmdOptList cmdOpts;
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
 	NzbInfo nzbInfo;
 	FileInfo fileInfo;
 	fileInfo.SetNzbInfo(&nzbInfo);
@@ -295,6 +300,8 @@ BOOST_AUTO_TEST_CASE(DirectWriteBypassForPasswordTest)
 	directWriteAllowed = (g_Options->GetDirectWrite() && !hasPassword) || fileInfo.GetForceDirectWrite();
 	BOOST_CHECK(hasPassword);
 	BOOST_CHECK_EQUAL(directWriteAllowed, false);
+
+	g_Options = oldOptions;
 }
 
 BOOST_AUTO_TEST_CASE(ArticleDownloaderFailoverMappingTest)

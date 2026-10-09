@@ -637,8 +637,9 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 		{
 			// Body end found: switch back to line mode to process the
 			// "=yend"/eof marker line (mirrors the raw endseq == 1 path).
+			std::string marker(buffer + markerOffset, len - markerOffset);
 			m_lineBuf.SetLength(0);
-			m_lineBuf.Append(buffer + markerOffset, len - markerOffset);
+			m_lineBuf.Append(marker.data(), static_cast<int>(marker.size()));
 			m_body = false;
 		}
 

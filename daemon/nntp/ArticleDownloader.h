@@ -24,6 +24,7 @@
 #define ARTICLEDOWNLOADER_H
 
 #include <atomic>
+#include <memory>
 #include "NString.h"
 #include "Observer.h"
 #include "DownloadInfo.h"
@@ -32,6 +33,7 @@
 #include "Decoder.h"
 #include "ArticleWriter.h"
 #include "Util.h"
+#include "YEncDecryptor.h"
 
 class ArticleContentAnalyzer
 {
@@ -60,9 +62,9 @@ public:
 
 	ArticleDownloader();
 	virtual ~ArticleDownloader();
-	void SetFileInfo(FileInfo* fileInfo) { m_fileInfo = fileInfo; }
+	void SetFileInfo(FileInfo* fileInfo) { m_fileInfo = fileInfo; m_articleWriter.SetFileInfo(fileInfo); }
 	FileInfo* GetFileInfo() { return m_fileInfo; }
-	void SetArticleInfo(ArticleInfo* articleInfo) { m_articleInfo = articleInfo; }
+	void SetArticleInfo(ArticleInfo* articleInfo) { m_articleInfo = articleInfo; m_articleWriter.SetArticleInfo(articleInfo); }
 	ArticleInfo* GetArticleInfo() { return m_articleInfo; }
 	EStatus GetStatus() { return m_status; }
 	ServerStatList* GetServerStats() { return &m_serverStats; }
@@ -79,6 +81,14 @@ public:
 	int GetDownloadedSize() { return m_downloadedSize; }
 	void SetContentAnalyzer(std::unique_ptr<ArticleContentAnalyzer> contentAnalyzer) { m_contentAnalyzer = std::move(contentAnalyzer); }
 	ArticleContentAnalyzer* GetContentAnalyzer() { return m_contentAnalyzer.get(); }
+	YEncDecryptor* GetDecryptor() { return m_decryptor.get(); }
+	void SetDecryptor(std::unique_ptr<YEncDecryptor> decryptor) { m_decryptor = std::move(decryptor); }
+	Decoder* GetDecoder() { return &m_decoder; }
+	ArticleWriter* GetArticleWriter() { return &m_articleWriter; }
+	EStatus DecodeCheck();
+	bool Write(char* buffer, int len);
+	void SetWritingStarted(bool started) { m_writingStarted = started; }
+	bool GetWritingStarted() const { return m_writingStarted; }
 
 	void LogDebugInfo();
 
@@ -98,13 +108,12 @@ private:
 	bool m_writingStarted;
 	int m_downloadedSize = 0;
 	std::unique_ptr<ArticleContentAnalyzer> m_contentAnalyzer;
+	std::unique_ptr<YEncDecryptor> m_decryptor;
 
 	EStatus Download();
-	EStatus DecodeCheck();
 	void FreeConnection(bool keepConnected);
 	EStatus CheckResponse(const char* response, const char* comment);
 	void SetStatus(EStatus status) { m_status = status; }
-	bool Write(char* buffer, int len);
 	void AddServerStats();
 };
 

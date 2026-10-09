@@ -360,6 +360,29 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	m_decoder.SetCrcCheck(g_Options->GetCrcCheck());
 	m_decoder.SetRawMode(g_Options->GetRawArticle());
 
+	bool isEncrypted = (m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->IsYEncEncrypted());
+	if (isEncrypted)
+	{
+		const char* password = m_fileInfo->GetNzbInfo()->GetPassword();
+		if (!m_decryptor)
+		{
+			m_decryptor = std::make_unique<YEncDecryptor>(password ? password : "");
+		}
+		else
+		{
+			m_decryptor->SetPassword(password ? password : "");
+		}
+		m_decoder.SetDecryptor(m_decryptor.get());
+	}
+	else if (m_decryptor)
+	{
+		m_decoder.SetDecryptor(m_decryptor.get());
+	}
+	else
+	{
+		m_decoder.SetDecryptor(nullptr);
+	}
+
 	status = adRunning;
 	CharBuffer lineBuf(g_Options->GetArticleReadChunkSize());
 
@@ -509,7 +532,7 @@ bool ArticleDownloader::Write(char* buffer, int len)
 
 	bool ok = m_articleWriter.Write(buffer, len);
 
-	if (m_contentAnalyzer)
+	if (m_contentAnalyzer && !m_articleWriter.IsEncryptedRelease())
 	{
 		m_contentAnalyzer->Append(buffer, len);
 	}
@@ -530,13 +553,55 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				m_articleFilename = m_decoder.GetArticleFilename();
 			}
 
-			if (m_decoder.GetFormat() == Decoder::efYenc)
+			if (m_decoder.IsEncrypted())
+			{
+				// Commit authenticated plaintext
+				if (!m_writingStarted)
+				{
+					const char* articleFilename = m_decoder.GetArticleFilename();
+					int64 articleFileSize = m_decoder.GetSize();
+					int64 articleOffset = m_decoder.GetBeginPos() > 0 ? m_decoder.GetBeginPos() - 1 : 0;
+					int articleSize = (int)(m_decoder.GetEndPos() - m_decoder.GetBeginPos() + 1);
+					if (articleSize <= 0)
+					{
+						articleSize = static_cast<int>(m_decoder.GetDecryptedData().size());
+					}
+					if (!m_articleWriter.Start(m_decoder.GetFormat(), articleFilename, articleFileSize, articleOffset, articleSize))
+					{
+						m_articleWriter.DiscardStagedData();
+						return adFatalError;
+					}
+					m_writingStarted = true;
+				}
+
+				const auto& plaintext = m_decoder.GetDecryptedData();
+				if (!m_articleWriter.CommitAuthenticatedData(plaintext.data(), static_cast<int>(plaintext.size())))
+				{
+					m_articleWriter.DiscardStagedData();
+					return adFatalError;
+				}
+
+				if (m_contentAnalyzer)
+				{
+					m_contentAnalyzer->Append(plaintext.data(), static_cast<int>(plaintext.size()));
+				}
+
+				// Skip setting ciphertext CRC (leaving CRC calculation for ParChecker on plaintext).
+				// m_articleInfo->SetCrc is intentionally omitted for encrypted articles.
+			}
+			else if (m_decoder.GetFormat() == Decoder::efYenc)
 			{
 				m_articleInfo->SetCrc(g_Options->GetCrcCheck() ?
 					m_decoder.GetCalculatedCrc() : m_decoder.GetExpectedCrc());
 			}
 
 			return adFinished;
+		}
+		else if (status == Decoder::dsAuthFailed)
+		{
+			m_articleWriter.DiscardStagedData();
+			warn("Decoding %s failed: authentication failed, trying next provider", *m_infoName);
+			return adNotFound;
 		}
 		else if (status == Decoder::dsCrcError)
 		{

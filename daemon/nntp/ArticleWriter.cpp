@@ -52,6 +52,20 @@ CachedSegmentData& CachedSegmentData::operator=(CachedSegmentData&& other)
 }
 
 
+bool ArticleWriter::IsEncryptedRelease() const
+{
+	if (m_encryptedReleaseOverride.has_value())
+	{
+		return *m_encryptedReleaseOverride;
+	}
+	return m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
+}
+
+void ArticleWriter::SetEncryptedRelease(bool encrypted)
+{
+	m_encryptedReleaseOverride = encrypted;
+}
+
 void ArticleWriter::SetWriteBuffer(DiskFile& outFile, int recSize)
 {
 	if (g_Options->GetWriteBuffer() > 0)
@@ -103,7 +117,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			}
 		}
 
-		if (g_Options->GetDirectWrite())
+		if (g_Options->GetDirectWrite() && !IsEncryptedRelease())
 		{
 			Guard guard = m_fileInfo->GuardOutputFile();
 			if (!m_fileInfo->GetOutputInitialized())
@@ -142,7 +156,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			return true;
 		}
 
-		bool directWrite = (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+		bool directWrite = !IsEncryptedRelease() && (g_Options->GetDirectWrite() || (m_fileInfo && m_fileInfo->GetForceDirectWrite())) && m_format == Decoder::efYenc;
 		const char* outFilename = directWrite ? m_outputFilename.c_str() : m_tempFilename.c_str();
 		if (!m_outFile.Open(outFilename, directWrite ? DiskFile::omReadWrite : DiskFile::omWrite))
 		{
@@ -174,6 +188,14 @@ bool ArticleWriter::GetSkipDiskWrite()
 
 bool ArticleWriter::Write(char* buffer, int len)
 {
+	if (IsEncryptedRelease())
+	{
+		// Suppress chunk writes for encrypted releases.
+		// Unauthenticated ciphertext must never be committed to disk or cache.
+		// Plaintext is committed via CommitAuthenticatedData() only after Poly1305 authentication.
+		return true;
+	}
+
 	if (!g_Options->GetRawArticle())
 	{
 		m_articlePtr += len;
@@ -202,6 +224,94 @@ bool ArticleWriter::Write(char* buffer, int len)
 	return m_outFile.Write(buffer, len) > 0;
 }
 
+bool ArticleWriter::CommitAuthenticatedData(const void* data, int len)
+{
+	if (len < 0)
+	{
+		return false;
+	}
+
+	if (GetSkipDiskWrite())
+	{
+		m_articlePtr = len;
+		return true;
+	}
+
+	if (!g_Options->GetRawArticle() && m_articleData.GetData())
+	{
+		if (m_articleSize != len)
+		{
+			if (g_ArticleCache)
+			{
+				g_ArticleCache->Realloc(&m_articleData, len);
+			}
+			m_articleSize = len;
+		}
+
+		if (m_articleData.GetData() && data && len > 0)
+		{
+			memcpy(m_articleData.GetData(), data, len);
+		}
+		m_articlePtr = len;
+		return true;
+	}
+
+	// Disk-based write
+	if (!m_outFile.Active())
+	{
+		if (m_tempFilename.empty())
+		{
+			BuildOutputFilename();
+		}
+		if (!m_outFile.Open(m_tempFilename.c_str(), DiskFile::omWrite))
+		{
+			if (m_fileInfo && m_fileInfo->GetNzbInfo())
+			{
+				m_fileInfo->GetNzbInfo()->PrintMessage(Message::mkError,
+					"Could not create file %s: %s", m_tempFilename.c_str(),
+					*FileSystem::GetLastErrorMessage());
+			}
+			return false;
+		}
+		SetWriteBuffer(m_outFile, len);
+	}
+
+	m_outFile.Seek(0);
+	if (len > 0 && data)
+	{
+		if (m_outFile.Write(data, len) != len)
+		{
+			return false;
+		}
+	}
+	m_articlePtr = len;
+	return true;
+}
+
+void ArticleWriter::DiscardStagedData()
+{
+	m_outFile.Close();
+
+	if (m_articleData.GetData() && g_ArticleCache)
+	{
+		g_ArticleCache->Free(&m_articleData);
+	}
+
+	if (!GetSkipDiskWrite())
+	{
+		if (!m_tempFilename.empty())
+		{
+			FileSystem::DeleteFile(m_tempFilename.c_str());
+		}
+		if (!m_resultFilename.empty())
+		{
+			FileSystem::DeleteFile(m_resultFilename.c_str());
+		}
+	}
+
+	m_articlePtr = 0;
+}
+
 void ArticleWriter::Finish(bool success)
 {
 	m_outFile.Close();
@@ -216,7 +326,7 @@ void ArticleWriter::Finish(bool success)
 		return;
 	}
 
-	bool directWrite = (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+	bool directWrite = !IsEncryptedRelease() && (g_Options->GetDirectWrite() || (m_fileInfo && m_fileInfo->GetForceDirectWrite())) && m_format == Decoder::efYenc;
 
 	if (!g_Options->GetRawArticle())
 	{
@@ -311,8 +421,13 @@ void ArticleWriter::BuildOutputFilename()
 	if (Util::EmptyStr(tmpDir) || Util::EmptyStr(destDir))
 		return;
 
+	CString expandedTmpDir = FileSystem::ExpandHomePath(tmpDir);
+	expandedTmpDir = FileSystem::ExpandFileName(expandedTmpDir);
+	CString errmsg;
+	FileSystem::ForceDirectories(expandedTmpDir, errmsg);
+
 	std::stringstream ss;
-	ss << tmpDir;
+	ss << *expandedTmpDir;
 	ss << PATH_SEPARATOR;
 	ss << m_fileInfo->GetId();
 	ss << ".";
@@ -323,7 +438,7 @@ void ArticleWriter::BuildOutputFilename()
 	m_articleInfo->SetResultFilename(filename.c_str());
 	m_tempFilename = filename + ".tmp";
 
-	if (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite())
+	if (!IsEncryptedRelease() && (g_Options->GetDirectWrite() || (m_fileInfo && m_fileInfo->GetForceDirectWrite())))
 	{
 		Guard guard = m_fileInfo->GuardOutputFile();
 		const std::string& outputFilename = m_fileInfo->GetOutputFilename();
@@ -356,7 +471,7 @@ void ArticleWriter::CompleteFileParts()
 	debug("ArticleFilename: %s", m_fileInfo->GetFilename());
 
 	// 1. Gather context & configuration
-	bool directWrite = (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
+	bool directWrite = !IsEncryptedRelease() && (g_Options->GetDirectWrite() || (m_fileInfo && m_fileInfo->GetForceDirectWrite())) && m_fileInfo->GetOutputInitialized();
 	bool cached = m_fileInfo->GetCachedArticles() > 0;
 
 	std::string nzbDestDir;

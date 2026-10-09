@@ -66,6 +66,13 @@ public:
 	bool Write(char* buffer, int len);
 	void Finish(bool success);
 	bool GetDuplicate() { return m_duplicate; }
+	bool IsEncryptedRelease() const;
+	void SetEncryptedRelease(bool encrypted);
+	bool CommitAuthenticatedData(const void* data, int len);
+	void DiscardStagedData();
+	const std::string& GetTempFilename() const { return m_tempFilename; }
+	const std::string& GetResultFilename() const { return m_resultFilename; }
+	const std::string& GetOutputFilename() const { return m_outputFilename; }
 	void LogStartMessage(std::string_view infoFilename, bool directWrite, bool cached);
 	std::optional<OutputPaths> SetupOutputFile(DiskFile &outfile,
 											std::string_view destDir,
@@ -110,6 +117,7 @@ private:
 	int m_articleSize;
 	int m_articlePtr;
 	bool m_duplicate = false;
+	std::optional<bool> m_encryptedReleaseOverride;
 
 	bool CreateOutputFile(int64 size);
 	void BuildOutputFilename();

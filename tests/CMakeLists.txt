@@ -36,6 +36,8 @@ add_test(NAME MainTest         COMMAND ${TESTS_TARGET} --run_test=MainTest --log
 add_test(NAME ExtensionTest    COMMAND ${TESTS_TARGET} --run_test=ExtensionTest --log_level=message)
 add_test(NAME NNTPTest         COMMAND ${TESTS_TARGET} --run_test=NNTPTest --log_level=message)
 add_test(NAME NNTPTest/Decoder COMMAND ${TESTS_TARGET} --run_test=NNTPTest/SingleMessageTest,MultipartMessageTest,UnusualMultipartMessageTest,BufferOverflowTest,EncryptedWireSinglePartTest,EncryptedWireMultipartTest,DecoderDualBootstrapMismatchFailsClosedTest,EncryptedWireBufferOverflowTest,DecoderAuthFailedCheckOrderTest,DecoderSegmentIndexResetsBetweenArticlesTest,DotUnstuffingBeforeBootstrapExtractionTest --log_level=message)
+add_test(NAME NNTPTest/ArticleWriter COMMAND ${TESTS_TARGET} --run_test=NNTPTest/ArticleWriter* --log_level=message)
+add_test(NAME NNTPTest/ArticleDownloader COMMAND ${TESTS_TARGET} --run_test=NNTPTest/ArticleDownloader* --log_level=message)
 add_test(NAME YEncDecryptor    COMMAND ${TESTS_TARGET} --run_test=NNTPTest/MasterKeyDerivationAndCachingTest,DeriveBodyNonceTest,AuthenticateAndDecryptTestVector,ZeroOutputOnCorruptTag,ControlLineDecryptionTest,ParseYEncryptionTest,YEncryptionGrammarTest,YEncryptionMalformedInputsTest,YEncDecryptorRaiiExceptionSafetyTest,YEncDecryptorAuthFailureZeroizationTest,ForbiddenSegmentIndexByteRejectTest --log_level=message)
 add_test(NAME ConformanceVectors COMMAND ${TESTS_TARGET} --run_test=QueueTest/Conformance* --log_level=message)
 set_tests_properties(ConformanceVectors PROPERTIES TIMEOUT 120)

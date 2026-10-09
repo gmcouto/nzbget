@@ -23,8 +23,13 @@
 #define DECODER_H
 
 #include <string>
+#include <vector>
+#include <memory>
+#include <cstdint>
 #include "NString.h"
 #include "Util.h"
+
+class YEncDecryptor;
 
 class Decoder
 {
@@ -36,7 +41,8 @@ public:
 		dsArticleIncomplete,
 		dsCrcError,
 		dsInvalidSize,
-		dsNoBinaryData
+		dsNoBinaryData,
+		dsAuthFailed
 	};
 
 	enum EFormat
@@ -46,7 +52,10 @@ public:
 		efUx,
 	};
 
+	static constexpr size_t kMaxWireBufferSize = 16 * 1024 * 1024; // 16 MB maximum wire buffer
+
 	Decoder();
+	~Decoder();
 	EStatus Check();
 	void Clear();
 	int DecodeBuffer(char* buffer, int len);
@@ -60,6 +69,18 @@ public:
 	uint32 GetCalculatedCrc() { return m_calculatedCRC; }
 	bool GetEof() { return m_eof; }
 	const char* GetArticleFilename() { return m_articleFilename.c_str(); }
+
+	void SetPassword(const char* password);
+	void SetDecryptor(YEncDecryptor* decryptor) { m_decryptor = decryptor; }
+	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
+	uint32 GetSegmentIndex() const { return m_segmentIndex; }
+	bool IsEncrypted() const { return m_encrypted; }
+	const uint8_t* GetSalt() const { return m_salt; }
+	const uint8_t* GetTag() const { return m_tag; }
+	const char* GetCipher() const { return m_cipher.c_str(); }
+	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
+	bool AuthenticateAndDecrypt(const uint8_t* ciphertext, size_t cipherLen, std::vector<uint8_t>& outPlaintext);
+	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
 
 private:
 	/**
@@ -110,9 +131,31 @@ private:
 	std::string m_articleFilename;
 	StringBuilder m_lineBuf;
 	Crc32 m_crc32;
+	YEncDecryptor* m_decryptor = nullptr;
+	std::unique_ptr<YEncDecryptor> m_ownDecryptor;
+	uint32 m_segmentIndex = 0;
+	bool m_encrypted = false;
+	bool m_authFailed = false;
+	uint8_t m_salt[16] = {0};
+	uint8_t m_tag[16] = {0};
+	std::string m_cipher;
+	std::vector<uint8_t> m_cipherPayload;
+	std::vector<uint8_t> m_decryptedPlaintext;
 
+	bool m_encryptedWireMode = false;
+	bool m_wireProcessed = false;
+	std::string m_wireBuffer;
+
+	// T9 / C2-05: RFC 3977 §3.1.1 dot-unstuffing state. The connection layer
+	// delivers raw socket bytes (single unstuffing owner: this decoder, before
+	// any line splitting or bootstrap extraction).
+	bool m_unstuffAtLineStart = true;
+
+	void UnstuffInPlace(char* buffer, int& len);
+	void ProcessRestoredBlock(const std::string& wireBlock);
 	EFormat DetectFormat(const char* buffer, int len);
 	void ProcessYenc(char* buffer, int len);
+	void ParseEncryption(const char* buffer, int len);
 	int DecodeYenc(char* buffer, char* outbuf, int len);
 	EStatus CheckYenc();
 	int DecodeUx(const char* inbuf, int len, char* outbuf);

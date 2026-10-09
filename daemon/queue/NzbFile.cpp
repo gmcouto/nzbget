@@ -346,6 +346,11 @@ bool NzbFile::ValidateEncryptedReleasePassword()
 
 bool NzbFile::ProcessFiles()
 {
+	if (m_password.empty())
+	{
+		ReadPasswordFromFilename();
+	}
+
 	if (!ValidateSegmentIdentities() || !ValidateEncryptedReleasePassword())
 	{
 		return false;
@@ -391,11 +396,6 @@ bool NzbFile::ProcessFiles()
 			g_DiskState->SaveFile(fileInfo);
 			fileInfo->GetArticles()->clear();
 		}
-	}
-
-	if (m_password.empty())
-	{
-		ReadPasswordFromFilename();
 	}
 
 	m_metaName = FileSystem::SanitizePathSegment(m_metaName);

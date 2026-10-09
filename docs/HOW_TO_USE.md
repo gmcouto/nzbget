@@ -263,9 +263,7 @@ the embedded password is used automatically without user intervention. NZBGet ex
 segment identity directly from article wire bytes, requiring no non-standard NZB segment
 attributes.
 
-If an encrypted NZB does not contain an embedded password, you can provide the password:
-- Via Web-interface: Click on the download item in the queue, edit its properties, and set the "Password" field.
-- Via CLI when adding to queue:
-```bash
-nzbget -A -o "*Unpack:Password=MyPassword" release.nzb
-```
+To supply a password for an encrypted NZB without a `<meta type="password">` tag, include
+the password in the NZB filename using double braces, such as `Release {{MyPassword}}.nzb`.
+Because encrypted releases validate passwords at queue ingest time to prevent invalid network
+requests, releases without a password in the metadata or filename are rejected when added.

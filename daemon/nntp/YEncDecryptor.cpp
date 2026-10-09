@@ -731,6 +731,11 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	}
 	sodium_memzero(encKey, sizeof(encKey));
 
+	if (ptNumerals.size() != ctNumerals.size())
+	{
+		return Status::Error;
+	}
+
 	outPlaintext.reserve(ptNumerals.size());
 	for (uint8_t n : ptNumerals)
 	{
@@ -857,6 +862,10 @@ YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
 	std::vector<uint8_t>& outWireData)
 {
 	outWireData.clear();
+	if (plainLen < 2)
+	{
+		return Status::Error;
+	}
 	if (m_sodiumInitFailed)
 	{
 		return Status::Error;
@@ -882,6 +891,13 @@ YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
 			plainNumerals.push_back(ByteToNumeral(plainData[i]));
 		}
 		const auto cipherNumerals = Ff1EncryptNumerals(encKey, tweak, 8, plainNumerals, 253);
+		if (cipherNumerals.size() != plainNumerals.size())
+		{
+			outWireData.clear();
+			sodium_memzero(encKey, sizeof(encKey));
+			sodium_memzero(tweak, sizeof(tweak));
+			return Status::Error;
+		}
 		if (isLine1)
 		{
 			outWireData.insert(outWireData.end(), salt, salt + 16);

@@ -39,7 +39,7 @@ add_test(NAME NNTPTest/Decoder COMMAND ${TESTS_TARGET} --run_test=NNTPTest/Singl
 add_test(NAME NNTPTest/ArticleWriter COMMAND ${TESTS_TARGET} --run_test=NNTPTest/ArticleWriter* --log_level=message)
 add_test(NAME NNTPTest/ArticleDownloader COMMAND ${TESTS_TARGET} --run_test=NNTPTest/ArticleDownloader* --log_level=message)
 add_test(NAME YEncDecryptor    COMMAND ${TESTS_TARGET} --run_test=NNTPTest/MasterKeyDerivationAndCachingTest,DeriveBodyNonceTest,AuthenticateAndDecryptTestVector,ZeroOutputOnCorruptTag,ControlLineDecryptionTest,ParseYEncryptionTest,YEncryptionGrammarTest,YEncryptionMalformedInputsTest,YEncDecryptorRaiiExceptionSafetyTest,YEncDecryptorAuthFailureZeroizationTest,ForbiddenSegmentIndexByteRejectTest --log_level=message)
-add_test(NAME ConformanceVectors COMMAND ${TESTS_TARGET} --run_test=QueueTest/Conformance* --log_level=message)
+add_test(NAME ConformanceVectors COMMAND ${TESTS_TARGET} --run_test=QueueTest/Conformance* --run_test=NNTPTest/Conformance* --log_level=message)
 set_tests_properties(ConformanceVectors PROPERTIES TIMEOUT 120)
 add_test(NAME SystemTest       COMMAND ${TESTS_TARGET} --run_test=SystemTest --log_level=message)
 add_test(NAME PostprocessTest  COMMAND ${TESTS_TARGET} --run_test=PostprocessTest --log_level=message)

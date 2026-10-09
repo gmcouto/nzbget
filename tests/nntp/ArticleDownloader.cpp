@@ -291,18 +291,65 @@ BOOST_AUTO_TEST_CASE(ArticleDownloaderDecodeCheckAuthFailedDiscardsDataAndReturn
 	BOOST_CHECK_EQUAL(FileSystem::FileExists(resultPath.c_str()), false);
 }
 
-BOOST_AUTO_TEST_CASE(ArticleDownloaderSecretLoggingAudit)
+BOOST_AUTO_TEST_CASE(EncryptedProviderSecretLoggingAuditTest)
 {
-	// Ensure that on auth failure, only a non-sensitive retry warning is logged.
-	// Verify that password strings, private key hex, salt hex, or plaintext are never in warning logs.
-	std::string canaryPassword = "super_canary_secret_12345";
-	std::string canaryPlaintext = "Confidential_Payload_Content";
+	// Test validating that passwords and plaintext strings are never emitted in logs.
+	// Canaries checked by test_secret_logging_audit.py:
+	const std::string canaryPassword = "SuperSecretAuditPassword999";
+	const std::string canaryPlaintext = "SecretPlaintextStringXYZ";
 
-	// Verify string search helper
-	std::string logMsg = "Decoding article.dat failed: authentication failed, trying next provider";
-	BOOST_CHECK(logMsg.find(canaryPassword) == std::string::npos);
-	BOOST_CHECK(logMsg.find(canaryPlaintext) == std::string::npos);
-	BOOST_CHECK(logMsg.find("authentication failed, trying next provider") != std::string::npos);
+	std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "nzbget_test_audit_canary";
+	CString errmsg;
+	FileSystem::ForceDirectories(tempDir.string().c_str(), errmsg);
+
+	std::vector<uint8_t> salt = LocalHexToBytes("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = LocalHexToBytes("6a0d1eb225f844920540fa382ff68874");
+	// Corrupt tag to force auth failure
+	std::vector<uint8_t> corruptTag = LocalHexToBytes("0cd77ce245a654463f90b945b1d22d00");
+	uint32_t segmentIndex = 1;
+
+	std::string wireMsg = BuildEncryptedWireArticle(canaryPassword, salt, segmentIndex, ct, corruptTag, "audit.dat");
+
+	std::unique_ptr<NzbInfo> nzbInfo = std::make_unique<NzbInfo>();
+	nzbInfo->SetName("AuditRelease");
+	nzbInfo->SetDestDir(tempDir.string().c_str());
+	nzbInfo->SetYEncEncrypted(true);
+	nzbInfo->GetParameters()->SetParameter("*Unpack:Password", canaryPassword.c_str());
+
+	FileInfo fileInfo;
+	fileInfo.SetFilename("audit.dat");
+	fileInfo.SetNzbInfo(nzbInfo.get());
+
+	ArticleInfo articleInfo;
+	articleInfo.SetPartNumber(1);
+	articleInfo.SetSize(16);
+
+	ArticleDownloader downloader;
+	downloader.SetFileInfo(&fileInfo);
+	downloader.SetArticleInfo(&articleInfo);
+
+	auto decryptor = std::make_unique<YEncDecryptor>(canaryPassword);
+	downloader.SetDecryptor(std::move(decryptor));
+	downloader.GetDecoder()->SetDecryptor(downloader.GetDecryptor());
+	downloader.GetDecoder()->SetPassword(canaryPassword.c_str());
+	downloader.GetDecoder()->SetCrcCheck(true);
+
+	downloader.GetArticleWriter()->SetFileInfo(&fileInfo);
+	downloader.GetArticleWriter()->SetArticleInfo(&articleInfo);
+	downloader.GetArticleWriter()->Prepare();
+
+	downloader.GetDecoder()->DecodeBuffer(wireMsg.data(), static_cast<int>(wireMsg.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(downloader.GetDecoder()->Check()), static_cast<int>(Decoder::dsAuthFailed));
+
+	// Trigger logging on auth failure
+	ArticleDownloader::EStatus status = downloader.DecodeCheck();
+	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(ArticleDownloader::adNotFound));
+
+	// Ensure paths do not leak secrets
+	bool passLeak = downloader.GetArticleWriter()->GetTempFilename().find(canaryPassword) != std::string::npos;
+	BOOST_CHECK(!passLeak);
+	bool plainLeak = downloader.GetArticleWriter()->GetTempFilename().find(canaryPlaintext) != std::string::npos;
+	BOOST_CHECK(!plainLeak);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

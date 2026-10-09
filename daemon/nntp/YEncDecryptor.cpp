@@ -431,6 +431,19 @@ void YEncDecryptor::SetPassword(const std::string& password)
 	ClearMasterKey();
 }
 
+void YEncDecryptor::SetMasterKeyForTesting(const uint8_t key[32], const uint8_t salt[16])
+{
+	m_cachedMasterKey.assign(key, key + 32);
+	if (salt)
+	{
+		m_cachedSalt.assign(salt, salt + 16);
+	}
+	else
+	{
+		m_cachedSalt.assign(16, 0);
+	}
+}
+
 bool YEncDecryptor::EnsureMasterKey(const uint8_t salt[16])
 {
 	if (!m_cachedSalt.empty() && m_cachedSalt.size() == 16 && memcmp(m_cachedSalt.data(), salt, 16) == 0)

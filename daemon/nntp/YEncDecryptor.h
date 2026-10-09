@@ -57,6 +57,8 @@ public:
 	// tweak = HMAC-SHA256(masterKey, "yenc-control tweak" + uint32_be(segmentIndex) + uint32_be(lineIndex))[:8]
 	bool DeriveControlKeyAndTweak(uint32_t segmentIndex, uint32_t lineIndex, uint8_t outKey[32], uint8_t outTweak[8]);
 
+	void SetMasterKeyForTesting(const uint8_t key[32], const uint8_t salt[16] = nullptr);
+
 	// Authenticate and decrypt ciphertext using XChaCha20-Poly1305.
 	// On tag mismatch, returns Status::AuthFailed and clears outPlaintext (Zero-Output Guarantee).
 	Status AuthenticateAndDecrypt(

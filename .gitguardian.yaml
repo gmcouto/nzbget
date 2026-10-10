@@ -57,6 +57,3 @@ secret:
       match: 6b0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28
     - name: test-decoder-ciphertext-hex
       match: 6a0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28
-  ignored_paths:
-    - "**/tests/**"
-    - "**/test-vectors/**"

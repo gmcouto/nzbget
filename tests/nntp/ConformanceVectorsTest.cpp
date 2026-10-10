@@ -738,28 +738,12 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 				BOOST_REQUIRE(parsed);
 				BOOST_REQUIRE(nzbInfo);
 				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
-				// Segment identity comes only from article bootstrap bytes
-				// (Body Std v1.2 §8): the NZB never assigns an index.
-				for (const auto& fileInfo : *nzbInfo->GetFileList())
-				{
-					for (const auto& article : *fileInfo->GetArticles())
-					{
-						BOOST_CHECK(!article->HasSegmentIndex());
-					}
-				}
 			}
 			else if (category == "unencrypted_compatibility")
 			{
 				BOOST_REQUIRE(parsed);
 				BOOST_REQUIRE(nzbInfo);
 				BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
-				for (const auto& fileInfo : *nzbInfo->GetFileList())
-				{
-					for (const auto& article : *fileInfo->GetArticles())
-					{
-						BOOST_CHECK(!article->HasSegmentIndex());
-					}
-				}
 			}
 			else if (category == "index_tampering")
 			{

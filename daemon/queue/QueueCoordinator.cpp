@@ -1200,34 +1200,6 @@ bool QueueCoordinator::MergeQueueEntries(DownloadQueue* downloadQueue, NzbInfo* 
 			error("Could not merge %s and %s: Encryption password mismatch", destNzbInfo->GetName(), srcNzbInfo->GetName());
 			return false;
 		}
-
-		std::unordered_set<uint32> destIndices;
-		for (const std::unique_ptr<FileInfo>& fileInfo : *destNzbInfo->GetFileList())
-		{
-			for (const auto& article : *fileInfo->GetArticles())
-			{
-				if (article && article->HasSegmentIndex())
-				{
-					destIndices.insert(article->GetSegmentIndex().value());
-				}
-			}
-		}
-
-		for (const std::unique_ptr<FileInfo>& fileInfo : *srcNzbInfo->GetFileList())
-		{
-			for (const auto& article : *fileInfo->GetArticles())
-			{
-				if (article && article->HasSegmentIndex())
-				{
-					uint32 idx = article->GetSegmentIndex().value();
-					if (destIndices.find(idx) != destIndices.end())
-					{
-						error("Could not merge %s and %s: Duplicate segment index collision", destNzbInfo->GetName(), srcNzbInfo->GetName());
-						return false;
-					}
-				}
-			}
-		}
 	}
 
 	// set new dest directory, new category and move downloaded files to new dest directory

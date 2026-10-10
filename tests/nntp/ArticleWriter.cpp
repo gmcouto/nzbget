@@ -60,7 +60,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterStagingTest)
 
 	ArticleInfo articleInfo;
 	articleInfo.SetSize(32);
-	articleInfo.SetSegmentIndex(1);
 
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);
@@ -115,7 +114,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterCommitTest)
 
 	ArticleInfo articleInfo;
 	articleInfo.SetSize(16);
-	articleInfo.SetSegmentIndex(1);
 
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);
@@ -197,8 +195,6 @@ BOOST_AUTO_TEST_CASE(UnencryptedArticleWriterWithArchivePasswordTest)
 
 	ArticleInfo articleInfo;
 	articleInfo.SetSize(32);
-	// No segment index
-	BOOST_REQUIRE(!articleInfo.HasSegmentIndex());
 
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);
@@ -283,7 +279,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 
 	ArticleInfo articleInfo;
 	articleInfo.SetSize(32);
-	articleInfo.SetSegmentIndex(1);
 
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);
@@ -336,7 +331,6 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 
 	ArticleInfo articleInfo;
 	articleInfo.SetSize(0);
-	articleInfo.SetSegmentIndex(1);
 
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);
@@ -425,7 +419,6 @@ BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 
 	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
 	BOOST_CHECK(writer.GetCachedData() == nullptr);
-	BOOST_CHECK(!articleInfo.HasSegmentIndex());
 
 	// Even if ciphertext were staged (worst case), DiscardStagedData on the
 	// failure path must leave no cache and no destination file.

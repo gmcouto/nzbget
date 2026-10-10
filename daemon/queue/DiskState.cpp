@@ -20,9 +20,6 @@
 
 
 #include "nzbget.h"
-#include <charconv>
-#include <string_view>
-#include <limits>
 #include "NString.h"
 #include "DiskState.h"
 #include "Options.h"
@@ -32,26 +29,9 @@
 
 static const char* FORMATVERSION_SIGNATURE = "nzbget diskstate file version ";
 const int DISKSTATE_QUEUE_VERSION = 64;
-const int DISKSTATE_FILE_VERSION = 8;
+const int DISKSTATE_FILE_VERSION = 7;
 const int DISKSTATE_STATS_VERSION = 4;
 const int DISKSTATE_FEEDS_VERSION = 3;
-
-static bool ParseUint32Token(std::string_view str, uint32& val)
-{
-	if (str.empty())
-	{
-		return false;
-	}
-	for (char c : str)
-	{
-		if (c < '0' || c > '9')
-		{
-			return false;
-		}
-	}
-	auto res = std::from_chars(str.data(), str.data() + str.size(), val);
-	return res.ec == std::errc{} && res.ptr == str.data() + str.size();
-}
 
 class StateDiskFile : public DiskFile
 {
@@ -85,20 +65,16 @@ char* StateDiskFile::ReadLine(char* buffer, int64 size)
 		return nullptr;
 	}
 
-	// remove traling '\n' and '\r'
+	// remove traling '\n'
 	if (*buffer)
 	{
-		size_t len = strlen(buffer);
-		if (buffer[len - 1] != '\n')
+		if (buffer[strlen(buffer) - 1] != '\n')
 		{
 			// the line is longer than "size", scroll file position to the end of the line
 			for (char skipbuf[1024]; DiskFile::ReadLine(skipbuf, 1024) && *skipbuf && skipbuf[strlen(skipbuf) - 1] != '\n'; ) ;
 		}
 
-		while (len > 0 && (buffer[len - 1] == '\n' || buffer[len - 1] == '\r'))
-		{
-			buffer[--len] = 0;
-		}
+		buffer[strlen(buffer) - 1] = 0;
 	}
 
 	return buffer;
@@ -1128,9 +1104,7 @@ bool DiskState::SaveFileInfo(FileInfo* fileInfo, StateDiskFile& outfile, bool ar
 		outfile.PrintLine("%i", (int)fileInfo->GetArticles()->size());
 		for (ArticleInfo* articleInfo : fileInfo->GetArticles())
 		{
-			// Version 8+: third field is the bootstrap-extracted segmentIndex (0 if not yet known)
-			outfile.PrintLine("%i,%i,%u", articleInfo->GetPartNumber(), articleInfo->GetSize(),
-				articleInfo->GetSegmentIndex().value_or(0));
+			outfile.PrintLine("%i,%i", articleInfo->GetPartNumber(), articleInfo->GetSize());
 			outfile.PrintLine("%s", articleInfo->GetMessageId());
 		}
 	}
@@ -1161,11 +1135,6 @@ bool DiskState::LoadFile(FileInfo* fileInfo, bool fileSummary, bool articles)
 
 bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int formatVersion, bool fileSummary, bool articles)
 {
-	if (formatVersion <= 0)
-	{
-		goto error;
-	}
-
 	char buf[1024];
 
 	if (!infile.ReadLine(buf, sizeof(buf))) goto error;
@@ -1235,44 +1204,7 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 		for (int i = 0; i < size; i++)
 		{
 			int PartNumber, PartSize;
-			uint32 segmentIndex = 0;
-
-			if (formatVersion >= 8)
-			{
-				if (!infile.ReadLine(buf, sizeof(buf))) goto error;
-
-				std::string_view artLine(buf);
-				size_t c1 = artLine.find(',');
-				if (c1 == std::string_view::npos) goto error;
-				size_t c2 = artLine.find(',', c1 + 1);
-				if (c2 == std::string_view::npos) goto error;
-				if (artLine.find(',', c2 + 1) != std::string_view::npos) goto error;
-
-				std::string_view partStr = artLine.substr(0, c1);
-				std::string_view sizeStr = artLine.substr(c1 + 1, c2 - (c1 + 1));
-				std::string_view segStr = artLine.substr(c2 + 1);
-
-				uint32 partVal = 0;
-				uint32 sizeVal = 0;
-				if (!ParseUint32Token(partStr, partVal) ||
-					!ParseUint32Token(sizeStr, sizeVal) ||
-					!ParseUint32Token(segStr, segmentIndex))
-				{
-					goto error;
-				}
-				if (partVal > static_cast<uint32>(std::numeric_limits<int>::max()) ||
-					sizeVal > static_cast<uint32>(std::numeric_limits<int>::max()) ||
-					partVal == 0)
-				{
-					goto error;
-				}
-				PartNumber = static_cast<int>(partVal);
-				PartSize = static_cast<int>(sizeVal);
-			}
-			else
-			{
-				if (infile.ScanLine("%i,%i", &PartNumber, &PartSize) != 2) goto error;
-			}
+			if (infile.ScanLine("%i,%i", &PartNumber, &PartSize) != 2) goto error;
 
 			if (!infile.ReadLine(buf, sizeof(buf))) goto error;
 
@@ -1280,23 +1212,6 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 			articleInfo->SetPartNumber(PartNumber);
 			articleInfo->SetSize(PartSize);
 			articleInfo->SetMessageId(buf);
-
-			if (formatVersion >= 8)
-			{
-				if (segmentIndex != 0)
-				{
-					articleInfo->SetSegmentIndex(segmentIndex);
-				}
-				else
-				{
-					articleInfo->SetSegmentIndex(std::nullopt);
-				}
-			}
-			else
-			{
-				articleInfo->SetSegmentIndex(std::nullopt);
-			}
-
 			fileInfo->GetArticles()->push_back(std::move(articleInfo));
 		}
 	}
@@ -1304,10 +1219,6 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 	return true;
 
 error:
-	if (articles)
-	{
-		fileInfo->GetArticles()->clear();
-	}
 	error("Error reading diskstate for file %i", fileInfo->GetId());
 	return false;
 }

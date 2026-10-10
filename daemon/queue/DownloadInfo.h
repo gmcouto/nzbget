@@ -26,7 +26,6 @@
 #include <atomic>
 #include <algorithm>
 #include <string>
-#include <optional>
 #include "NString.h"
 #include "Container.h"
 #include "Observer.h"
@@ -106,17 +105,12 @@ public:
 	void SetResultFilename(const char* resultFilename) { m_resultFilename = resultFilename; }
 	uint32 GetCrc() { return m_crc; }
 	void SetCrc(uint32 crc) { m_crc = crc; }
-	std::optional<uint32> GetSegmentIndex() const { return m_segmentIndex; }
-	void SetSegmentIndex(std::optional<uint32> segmentIndex) { m_segmentIndex = segmentIndex; }
-	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
-	bool HasSegmentIndex() const { return m_segmentIndex.has_value(); }
 
 private:
 	std::unique_ptr<SegmentData> m_segmentContent;
 	std::atomic<int64> m_segmentOffset{0};
 	std::atomic<int> m_segmentSize{0};
 	std::atomic<uint32> m_crc{0};
-	std::optional<uint32> m_segmentIndex;
 	CString m_messageId;
 	CString m_resultFilename;
 	EStatus m_status = aiUndefined;

@@ -590,11 +590,6 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 			bool isEncrypted = m_decoder.IsEncrypted();
 			if (isEncrypted)
 			{
-				// Persist the bootstrap-extracted index only AFTER
-				// authentication succeeded (Check() == dsFinished) — on auth
-				// failure no index metadata leaks into the queue model.
-				m_articleInfo->SetSegmentIndex(m_decoder.GetSegmentIndex());
-
 				int64 articleFileSize = m_decoder.GetSize();
 				int64 articleOffset = m_decoder.GetBeginPos() > 0 ? m_decoder.GetBeginPos() - 1 : 0;
 				int articleSize = static_cast<int>(m_decoder.GetDecryptedData().size());

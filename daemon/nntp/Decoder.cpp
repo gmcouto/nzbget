@@ -30,6 +30,10 @@
 // incremental "end-aware" decoder with dot-unstuffing hardwired (isRaw=true);
 // the non-raw variant is reachable only via the internal _do_decode function
 // pointer (extern-declared here, defined in rapidyenc's src/decoder.cc).
+//
+// These internals are pinned-tag-specific; see cmake/rapidyenc.cmake and the
+// static_assert below. The non-raw kernel consumed here has no incremental
+// early-exit semantics: it consumes the entire len input.
 namespace RapidYenc
 {
 	typedef int YencDecoderState;
@@ -37,6 +41,14 @@ namespace RapidYenc
 	extern int (*_do_decode_raw)(const unsigned char**, unsigned char**, size_t, int*);
 	extern int _decode_isa;
 }
+
+// Compile-time guard for the rapidyenc internals reach above (cmake/rapidyenc.cmake
+// documents the pinned tag). If rapidyenc is bumped past a version whose internal
+// decoder kernel layout changed, fail the build here instead of silently corrupting
+// encrypted blocks; re-validate the extern block against rapidyenc's src/decoder.cc.
+static_assert(RAPIDYENC_VERSION == 0x010101,
+	"Decoder.cpp externs rapidyenc internals (_do_decode/_do_decode_raw) that are "
+	"only validated for rapidyenc v1.1.1 (0x010101); re-validate them before bumping");
 
 // Non-raw yEnc decode: returns bytes written to dest. Consumes the entire
 // len input (the non-raw decoder has no incremental early-exit semantics).

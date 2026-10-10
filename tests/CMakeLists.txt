@@ -37,7 +37,7 @@ add_test(NAME MainTest         COMMAND ${TESTS_TARGET} --run_test=MainTest --log
 add_test(NAME ExtensionTest    COMMAND ${TESTS_TARGET} --run_test=ExtensionTest --log_level=message)
 add_test(NAME NNTPTest         COMMAND ${TESTS_TARGET} --run_test=NNTPTest --log_level=message)
 add_test(NAME YEncDecryptorTest COMMAND ${TESTS_TARGET} --run_test=NNTPTest/ForbiddenSegmentIndexByteRejectTest --log_level=message)
-add_test(NAME ConformanceVectors COMMAND ${TESTS_TARGET} --run_test=NNTPTest/DynamicArgon2idTestVectors,DynamicNonceTweakTestVectors,DynamicBodyEncryptionTestVectors,DynamicControlLineEncryptionTestVectors,DynamicMalformedInputsTestVectors,IndexAllocationTestVectors,NzbSegmentIdentityTestVectors --log_level=message)
+add_test(NAME ConformanceVectors COMMAND ${TESTS_TARGET} --run_test=NNTPTest/ConformanceManifestSyncTest,DynamicArgon2idTestVectors,DynamicNonceTweakTestVectors,DynamicBodyEncryptionTestVectors,DynamicControlLineEncryptionTestVectors,DynamicMalformedInputsTestVectors,IndexAllocationTestVectors,NzbSegmentIdentityTestVectors --log_level=message)
 add_test(NAME SystemTest       COMMAND ${TESTS_TARGET} --run_test=SystemTest --log_level=message)
 add_test(NAME PostprocessTest  COMMAND ${TESTS_TARGET} --run_test=PostprocessTest --log_level=message)
 add_test(NAME SystemHealthTest COMMAND ${TESTS_TARGET} --run_test=SystemHealthTest --log_level=message)

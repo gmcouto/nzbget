@@ -13,6 +13,7 @@
 
 #include <boost/json.hpp>
 #include <boost/test/unit_test.hpp>
+#include <openssl/sha.h>
 
 #include "YEncDecryptor.h"
 #include "NzbFile.h"
@@ -109,6 +110,27 @@ std::string BinToHex(const std::vector<uint8_t>& data)
 	return BinToHex(data.data(), data.size());
 }
 
+// SHA-256 of raw fixture bytes as lowercase hex; used by the manifest sync test
+// to catch any local drift of the vendored conformance vectors.
+std::string Sha256Hex(const std::string& content)
+{
+	unsigned char digest[SHA256_DIGEST_LENGTH];
+	SHA256_CTX context;
+	SHA256_Init(&context);
+	SHA256_Update(&context, content.data(), content.size());
+	SHA256_Final(digest, &context);
+
+	static const char hex[] = "0123456789abcdef";
+	std::string result;
+	result.reserve(SHA256_DIGEST_LENGTH * 2);
+	for (unsigned char byte : digest)
+	{
+		result.push_back(hex[byte >> 4]);
+		result.push_back(hex[byte & 0x0F]);
+	}
+	return result;
+}
+
 void CheckZeroOutput(const boost::json::object& vector, const std::vector<uint8_t>& output)
 {
 	if (vector.at("zero_output_required").as_bool())
@@ -134,6 +156,35 @@ size_t blockerLineCount(const std::string& block)
 } // anonymous namespace
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
+
+// Manifest drift guard: every fixture file must exist and hash-match the
+// sha256 recorded in manifest.json, so the vector suites below cannot pass
+// silently against stale or edited fixtures (v1.2 manifest contract).
+BOOST_AUTO_TEST_CASE(ConformanceManifestSyncTest)
+{
+	const auto manifest = LoadFixture("manifest.json");
+	BOOST_CHECK_EQUAL(JsonString(manifest, "standard_version"), "1.2");
+
+	const auto& files = manifest.at("files").as_object();
+	BOOST_CHECK_EQUAL(files.size(), 7U);
+
+	const std::vector<std::string> expected = {
+		"argon2id.json",
+		"body_encryption.json",
+		"control_line_encryption.json",
+		"index_allocation.json",
+		"malformed_inputs.json",
+		"nonce_tweak.json",
+		"nzb_segment_identity.json"
+	};
+	for (const std::string& name : expected)
+	{
+		BOOST_CHECK_MESSAGE(files.contains(name), ("manifest missing " + name).c_str());
+		BOOST_CHECK_EQUAL(
+			Sha256Hex(LoadFixtureText(name)),
+			JsonString(files.at(name).as_object(), "sha256"));
+	}
+}
 
 BOOST_AUTO_TEST_CASE(DynamicArgon2idTestVectors)
 {

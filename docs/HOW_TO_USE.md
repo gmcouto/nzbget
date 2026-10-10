@@ -262,9 +262,5 @@ When an NZB contains `<meta type="yenc_encrypted">true</meta>` and `<meta type="
 the embedded password is used automatically without user intervention. NZBGet extracts
 segment identity directly from article wire bytes; segments are standard NZB 1.1.
 
-If an encrypted NZB does not contain an embedded password, you can provide the password:
-- Via Web-interface: Click on the download item in the queue, edit its properties, and set the "Password" field.
-- Via CLI when adding to queue:
-```bash
-nzbget -A -o "*Unpack:Password=MyPassword" release.nzb
-```
+The decryption password comes only from `<meta type="password">` in the NZB. An encrypted
+NZB without it is rejected when it is added to the queue.

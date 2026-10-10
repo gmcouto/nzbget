@@ -70,12 +70,12 @@ Control Lines Encryption Standards v1.2.
 - **Self-Describing Article Wire Bootstrap**: Decodes the 20-byte Line 1 prefix containing the
   16-byte raw salt and 4-byte big-endian uint32 `segmentIndex`, validating dual-bootstrap cross-header
   agreement against the canonical 5-token `=yencryption` line before decrypting.
-- **Standard NZB 1.1 Support**: Processes standard NZB 1.1 XML containing `<meta type="yenc_encrypted">true</meta>`
-  and `<meta type="password">` without custom segment attributes.
+- **Standard NZB 1.1 Support**: NZB segments are standard NZB 1.1; segment identity comes from the article
+  bytes. Encrypted releases are marked with `<meta type="yenc_encrypted">true</meta>`.
 - **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and
   `<meta type="password">` decrypt automatically without manual intervention.
-- **Manual Password Entry**: Passwords can be supplied via the web interface (Downloads -> edit item -> Password)
-  or via the command line option override when appending an NZB (`nzbget -A -o "*Unpack:Password=MyPassword" file.nzb`).
+- **Password Source**: The decryption password comes only from `<meta type="password">` in the NZB. An encrypted
+  NZB without it is rejected when it is added to the queue.
 - **Safe Staging**: Unauthenticated ciphertext is buffered in memory or temporary files and only committed
   to destination files after Poly1305 authentication succeeds. Authentication failures and wire header
   mismatches trigger server failover before failing the article.

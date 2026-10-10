@@ -558,7 +558,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireBufferOverflowTest)
 		decoder.DecodeBuffer(largeChunk.data(), static_cast<int>(largeChunk.size()));
 	}
 
-	// Must fail closed with dsAuthFailed on buffer ceiling overflow (C1-02)
+	// Must fail closed with dsAuthFailed on buffer ceiling overflow
 	auto status = decoder.Check();
 	BOOST_CHECK_EQUAL(status, Decoder::dsAuthFailed);
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
@@ -573,7 +573,7 @@ BOOST_AUTO_TEST_CASE(DecoderAuthFailedCheckOrderTest)
 
 BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
 {
-	// T3: m_decoder's bootstrap-extracted index must reset between articles —
+	// The decoder's bootstrap-extracted index must reset between articles —
 	// a stale index from a previous decode would corrupt dual-bootstrap
 	// agreement for the next article.
 	const std::string password = "test123";
@@ -654,7 +654,7 @@ BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
 
 BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 {
-	// T9 / C2-05 (Control Std v1.2, Transport boundary): a bootstrap Line 1
+	// Control Std v1.2 §9 "Transport boundary": a bootstrap Line 1
 	// starting with '.' is dot-stuffed on the wire; consumers MUST unstuff
 	// before line splitting/bootstrap extraction.
 	const std::string password = "test123";
@@ -741,7 +741,7 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 
 BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 {
-	// WR-01: a chunk ending exactly after "\r\n." must not consume the
+	// A chunk ending exactly after "\r\n." must not consume the
 	// following article terminator ".\r\n" as unstuffing input — the
 	// line-start '.' held back at the chunk boundary is the terminator's dot
 	// (or the first half of a split stuffed pair), not an escape dot to strip.
@@ -813,12 +813,12 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 		expectedPlaintext.begin(), expectedPlaintext.end());
 
 	// Chunk splits at and around the "\r\n." / terminator boundary, including
-	// the WR-01 exact cases: right after "\r\n." (before ".\r\n"), right
+	// the exact boundary cases: right after "\r\n." (before ".\r\n"), right
 	// after "\r\n.\r", and right after a lone line-start ".".
 	size_t terminatorPos = fullWire.size() - 5; // position of the final ".\r\n"
 	std::vector<size_t> splits = {
 		terminatorPos - 1,     // chunk ends after "\r\n" of =yend line
-		terminatorPos,         // chunk ends exactly after "\r\n." (WR-01 case)
+		terminatorPos,         // chunk ends exactly after "\r\n."
 		terminatorPos + 1,     // chunk ends exactly after "\r\n.\r"
 		terminatorPos + 2,     // chunk ends exactly after "\r\n.\r\n"
 		terminatorPos - 4,     // chunk ends inside the stuffed/escape region
@@ -853,7 +853,7 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 	}
 }
 
-// CR-01-R4: the restored block fed back through DecodeBuffer must not be
+// The restored block fed back through DecodeBuffer must not be
 // dot-unstuffed a second time — a restored yEnc data line beginning with '.'
 // (wire ct byte 0x04) or with '..' (ct bytes 0x04 0x04) must decode
 // byte-identically with the Poly1305 tag still verifying.
@@ -998,7 +998,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 	}
 
 	// 2. Restored data line begins with '..' — a second unstuffing pass would
-	//    collapse it to '.' (the old CR-01-R4 bug).
+	//    collapse it to '.'.
 	{
 		std::vector<uint8_t> expectedPlaintext;
 		std::string wire = buildWire(ctDouble, tagDouble, ptDouble, expectedPlaintext);
@@ -1012,7 +1012,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 	}
 }
 
-// WR-01-R4: a truncated encrypted article whose =yencryption metadata already
+// A truncated encrypted article whose =yencryption metadata already
 // failed authentication must report dsAuthFailed (provider failover tier),
 // not dsArticleIncomplete.
 BOOST_AUTO_TEST_CASE(TruncatedEncryptedArticleReportsAuthFailedTest)

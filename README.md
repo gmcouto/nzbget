@@ -64,13 +64,13 @@ More information available at https://nzbget.com
 ## yEnc Header and Body Decryption
 
 NZBGet supports downloading releases protected by yEnc body and control-line encryption
-(XChaCha20-Poly1305 and Radix 253 FF1) conforming to the experimental v1.1 Self-Describing
-Article Bootstrap Standard.
+(XChaCha20-Poly1305 and Radix 253 FF1) conforming to the experimental yEnc Body and
+Control Lines Encryption Standards v1.2.
 
 - **Self-Describing Article Wire Bootstrap**: Decodes the 20-byte Line 1 prefix containing the
   16-byte raw salt and 4-byte big-endian uint32 `segmentIndex`, validating dual-bootstrap cross-header
   agreement against the canonical 5-token `=yencryption` line before decrypting.
-- **Clean Standard NZB 1.1 Support**: Processes standard NZB 1.1 XML containing `<meta type="yenc_encrypted">true</meta>`
+- **Standard NZB 1.1 Support**: Processes standard NZB 1.1 XML containing `<meta type="yenc_encrypted">true</meta>`
   and `<meta type="password">` without custom segment attributes.
 - **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and
   `<meta type="password">` decrypt automatically without manual intervention.

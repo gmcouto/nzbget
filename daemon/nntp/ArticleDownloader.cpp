@@ -360,7 +360,7 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	m_decoder.SetCrcCheck(g_Options->GetCrcCheck());
 	m_decoder.SetRawMode(g_Options->GetRawArticle());
 
-	// T6 (Body Std v1.2 §7): gate the decryptor on the yEnc-encryption metadata only —
+	// Body Std v1.2 §8: gate the decryptor on the yEnc-encryption metadata only —
 	// an archive password (HasPassword) must never turn on ciphertext handling.
 	bool isEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
 		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
@@ -372,7 +372,7 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 			m_decryptor = std::make_unique<YEncDecryptor>(pwd);
 		}
 		m_decoder.SetDecryptor(m_decryptor.get());
-		// T3 dataflow (Body Std v1.2 §8): no expected index exists pre-fetch —
+		// Body Std v1.2 §8: no expected index exists pre-fetch —
 		// the decryptor extracts the authoritative index from the wire Line 1
 		// bootstrap. It is consumed post-auth-success in DecodeCheck().
 		m_decoder.SetSegmentIndex(0);
@@ -526,7 +526,7 @@ bool ArticleDownloader::Write(char* buffer, int len)
 
 		m_articleWriter.SetEncrypted(m_decoder.IsEncrypted() ||
 			(m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->IsYEncEncrypted()));
-			// T6 (Body Std v1.2 §7): IsYEncEncrypted() only — archive password alone
+			// Body Std v1.2 §8: IsYEncEncrypted() only — archive password alone
 			// must not stage ciphertext semantics.
 		if (!m_articleWriter.Start(m_decoder.GetFormat(), articleFilename, articleFileSize, articleOffset, articleSize))
 		{
@@ -558,7 +558,7 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				m_articleFilename = m_decoder.GetArticleFilename();
 			}
 
-			// T6 silent-ciphertext fallback fix (Body Std v1.2 §7): if the NZB
+			// No silent ciphertext fallback (Body Std v1.2 §8): if the NZB
 			// declared this release yenc_encrypted but the article carried no
 			// =yencryption bootstrap (body-only/unencrypted wire), m_decoder
 			// never entered encrypted mode — the decoded bytes are ciphertext
@@ -577,7 +577,7 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				return adNotFound;
 			}
 
-			// T4 (Body Std v1.2 §6): never persist the ciphertext CRC into a
+			// Downstream CRC normalization (Body Std v1.2 §9): never persist the ciphertext CRC into a
 			// verification path (ParChecker combines it → false quick-check
 			// mismatches). Skip SetCrc for encrypted segments so ParChecker
 			// recomputes fresh over authenticated plaintext.
@@ -590,7 +590,7 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 			bool isEncrypted = m_decoder.IsEncrypted();
 			if (isEncrypted)
 			{
-				// T3 dataflow: persist the bootstrap-extracted index only AFTER
+				// Persist the bootstrap-extracted index only AFTER
 				// authentication succeeded (Check() == dsFinished) — on auth
 				// failure no index metadata leaks into the queue model.
 				m_articleInfo->SetSegmentIndex(m_decoder.GetSegmentIndex());

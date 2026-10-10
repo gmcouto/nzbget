@@ -334,7 +334,7 @@ BOOST_AUTO_TEST_CASE(BuildFinalDirNameUniqueIdTest)
 	BOOST_CHECK_NE(finalDir1, finalDir2);
 }
 
-BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
+BOOST_AUTO_TEST_CASE(YEncEncryptedMetaParsingTest)
 {
 	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
 	{
@@ -352,7 +352,7 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		return { ok, std::move(nzbInfo) };
 	};
 
-	// 1. Valid clean NZB 1.1 encrypted release
+	// 1. Valid NZB 1.1 encrypted release
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -366,7 +366,7 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 			"</segments>\n"
 			"</file>\n"
 			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "valid_clean.nzb");
+		auto [ok, info] = parseXml(xml, "valid_nzb11.nzb");
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(info->IsYEncEncrypted());
@@ -419,24 +419,7 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		BOOST_CHECK(info->IsYEncEncrypted());
 	}
 
-	// 4. Legacy segmentIndex attributes tolerated
-	{
-		const std::string xml =
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"legacy.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"1\">msg1@test</segment></segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "legacy.nzb");
-		BOOST_REQUIRE(ok);
-		BOOST_REQUIRE(info);
-		BOOST_CHECK(info->IsYEncEncrypted());
-	}
-
-	// 5. Archive-password-only release (password without yenc_encrypted meta)
+	// 4. Archive-password-only release (password without yenc_encrypted meta)
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -457,7 +440,7 @@ BOOST_AUTO_TEST_CASE(ValidateSegmentIdentitiesTest)
 		BOOST_CHECK_EQUAL(info->GetPassword(), "archive_secret");
 	}
 
-	// 6. Unencrypted release without password
+	// 5. Unencrypted release without password
 	{
 		const std::string xml =
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -536,7 +519,7 @@ BOOST_AUTO_TEST_CASE(PasswordControlCharacterSanitizationTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 {
-	// T5 structural tier: yenc_encrypted release without password meta must fail
+	// Structural tier: yenc_encrypted release without password meta must fail
 	// at parse/queue time (METADATA_VALIDATION) — no server contact ever happens.
 	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
 	{
@@ -583,26 +566,6 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 	BOOST_CHECK(foundValidation);
 	BOOST_CHECK(!foundAuthFailure);
 
-	// Legacy segmentIndex attributes are ignored (T3), not fatal:
-	auto parseLegacy = [](std::string_view xml, const std::string& filename) -> bool
-	{
-		const fs::path tempNzb = fs::temp_directory_path() / filename;
-		WriteRawNzb(tempNzb, xml);
-		NzbFile nzbFile(tempNzb.string().c_str(), "");
-		bool ok = nzbFile.Parse();
-		fs::remove(tempNzb);
-		return ok;
-	};
-	const std::string legacyXml =
-		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-		"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-		"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
-		"<file poster=\"p\" date=\"100\" subject=\"legacy.bin\">\n"
-		"<groups><group>a.b.t</group></groups>\n"
-		"<segments><segment bytes=\"100\" number=\"1\" segmentIndex=\"malformed-not-a-number\">msg1@test</segment></segments>\n"
-		"</file>\n"
-		"</nzb>\n";
-	BOOST_CHECK(parseLegacy(legacyXml, "legacy_ignored.nzb"));
 }
 
 BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameFailsValidationTest)

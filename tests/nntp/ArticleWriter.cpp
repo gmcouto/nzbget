@@ -271,7 +271,7 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 
 	BOOST_REQUIRE(g_Options->GetDirectWrite());
 
-	// Case 1: NZB has password set but YEncEncrypted meta is missing (C1-01)
+	// Case 1: NZB has password set but YEncEncrypted meta is missing
 	NzbInfo nzbInfo;
 	nzbInfo.SetDestDir(tempDir.string().c_str());
 	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "secret123");
@@ -347,7 +347,7 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "zero_byte.dat", 0, 0, 0));
 
-	// C1-04: CommitAuthenticatedData for 0-byte authenticated payload must succeed
+	// CommitAuthenticatedData for 0-byte authenticated payload must succeed
 	bool commitOk = writer.CommitAuthenticatedData(nullptr, 0, 0);
 	BOOST_CHECK(commitOk);
 
@@ -378,7 +378,7 @@ BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
 
 BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 {
-	// T6 (Body Std v1.2 §7): an encrypted release whose article arrives without
+	// Body Std v1.2 §8: an encrypted release whose article arrives without
 	// the =yencryption bootstrap is provider corruption. DecodeCheck returns
 	// adFailed BEFORE any writer Start/Write/Finish — this test proves the
 	// writer machinery commits nothing when that path fires: no destination

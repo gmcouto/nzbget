@@ -21,11 +21,6 @@
 
 
 #include "nzbget.h"
-#include <charconv>
-#include <limits>
-#include <vector>
-#include <unordered_set>
-#include <unordered_map>
 #include "NzbFile.h"
 #include "Log.h"
 #include "DownloadInfo.h"
@@ -60,10 +55,6 @@ ArticleInfo* NzbFile::AddArticle(FileInfo* fileInfo, std::unique_ptr<ArticleInfo
 	if (index >= fileInfo->GetArticles()->size())
 	{
 		fileInfo->GetArticles()->resize(index + 1);
-	}
-	else if ((*fileInfo->GetArticles())[index])
-	{
-		fileInfo->SetDuplicateArticles(true);
 	}
 
 	(*fileInfo->GetArticles())[index] = std::move(articleInfo);
@@ -253,85 +244,9 @@ void NzbFile::CalcHashes()
 	m_nzbInfo->SetFilteredContentHash(filteredContentHash);
 }
 
-bool NzbFile::ParseFileCounter(std::string_view subject, uint32& fileOrdinal, uint32& totalFiles)
-{
-	if (subject.empty() || subject.front() != '[')
-	{
-		return false;
-	}
-
-	size_t bracketClose = subject.find(']');
-	if (bracketClose == std::string_view::npos)
-	{
-		return false;
-	}
-
-	std::string_view after = subject.substr(bracketClose + 1);
-	if (!after.starts_with(" - "))
-	{
-		return false;
-	}
-
-	std::string_view counter = subject.substr(1, bracketClose - 1);
-	size_t slashPos = counter.find('/');
-	if (slashPos == std::string_view::npos || counter.rfind('/') != slashPos)
-	{
-		return false;
-	}
-
-	std::string_view nStr = counter.substr(0, slashPos);
-	std::string_view mStr = counter.substr(slashPos + 1);
-	if (nStr.empty() || mStr.empty())
-	{
-		return false;
-	}
-
-	for (char c : nStr)
-	{
-		if (c < '0' || c > '9') return false;
-	}
-	for (char c : mStr)
-	{
-		if (c < '0' || c > '9') return false;
-	}
-
-	uint32 n = 0;
-	uint32 m = 0;
-	auto resN = std::from_chars(nStr.data(), nStr.data() + nStr.size(), n);
-	if (resN.ec != std::errc{} || resN.ptr != nStr.data() + nStr.size())
-	{
-		return false;
-	}
-
-	auto resM = std::from_chars(mStr.data(), mStr.data() + mStr.size(), m);
-	if (resM.ec != std::errc{} || resM.ptr != mStr.data() + mStr.size())
-	{
-		return false;
-	}
-
-	if (n == 0 || m == 0 || n > m)
-	{
-		return false;
-	}
-
-	fileOrdinal = n;
-	totalFiles = m;
-	return true;
-}
-
-bool NzbFile::ValidateSegmentIdentities()
-{
-	// T3 (Body Std v1.2 §8): readers MUST NOT consume segmentIndex XML attributes.
-	// Segment identity comes solely from the wire Line 1 bootstrap at download time;
-	// per-article segmentIndex stays unset until the decryptor extracts it.
-	m_nzbInfo->SetYEncEncrypted(m_yencEncryptedMeta);
-
-	return true;
-}
-
 bool NzbFile::ValidateEncryptedReleasePassword()
 {
-	// T5 structural tier (METADATA_VALIDATION): an encrypted release without a
+	// Structural tier (METADATA_VALIDATION, Body Std v1.2 §5): an encrypted release without a
 	// password can never authenticate. Abort at queue time — before any server
 	// contact — instead of burning every provider with per-article auth failures.
 	if (m_yencEncryptedMeta && m_password.empty())
@@ -346,7 +261,11 @@ bool NzbFile::ValidateEncryptedReleasePassword()
 
 bool NzbFile::ProcessFiles()
 {
-	if (!ValidateSegmentIdentities() || !ValidateEncryptedReleasePassword())
+	// Segment identity comes only from article bootstrap bytes (Body Std v1.2 §8);
+	// the NZB contributes the yenc_encrypted gate and the password.
+	m_nzbInfo->SetYEncEncrypted(m_yencEncryptedMeta);
+
+	if (!ValidateEncryptedReleasePassword())
 	{
 		return false;
 	}
@@ -498,13 +417,6 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			if (!strcmp("subject", attrname))
 			{
 				m_fileInfo->SetSubject(attrvalue);
-				uint32 fileOrdinal = 0;
-				uint32 totalFiles = 0;
-				if (ParseFileCounter(attrvalue, fileOrdinal, totalFiles))
-				{
-					m_fileInfo->SetFileOrdinal(fileOrdinal);
-					m_fileInfo->SetTotalFiles(totalFiles);
-				}
 			}
 			if (!strcmp("date", attrname) && attrvalue)
 			{
@@ -541,7 +453,6 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 			{
 				partNumber = atol(attrvalue);
 			}
-			// segmentIndex attributes (if present) are ignored per Body Std v1.2 §8.
 		}
 
 		if (partNumber > 0)

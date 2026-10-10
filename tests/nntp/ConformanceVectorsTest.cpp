@@ -484,7 +484,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			}
 			else if (category == "metadata_validation")
 			{
-				// T5 structural tier: metadata-shaped failures are structural
+				// Structural tier: metadata-shaped failures are structural
 				// (METADATA_VALIDATION) — provider failover is NOT permitted and
 				// output must be withheld. Model the queue-time gates:
 				// metadata-01/02 (provenance) and metadata-04 (body-only mode) map
@@ -514,7 +514,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				}
 				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
 				{
-					// Body-only mode article (T2): provenance meta explicitly false
+					// Body-only mode article: provenance meta explicitly false
 					// → combined-only receiver does not flag the release encrypted.
 					xml += "<head><meta type=\"yenc_encrypted\">false</meta></head>\n";
 				}
@@ -546,7 +546,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 
 				if (expectedError == "MISSING_PASSWORD")
 				{
-					// T5: structural abort at queue time — Parse() fails with a
+					// Structural abort at queue time — Parse() fails with a
 					// METADATA_VALIDATION error message, no server contact.
 					BOOST_CHECK(!parsed);
 					BOOST_REQUIRE(nzbInfo);
@@ -563,7 +563,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
 				{
 					// Combined-only receiver: body-only article is unsupported mode
-					// (T2 interoperability sentence) — not flagged yenc_encrypted.
+					// (Body Std v1.2 §5) — not flagged yenc_encrypted.
 					BOOST_CHECK(parsed);
 					BOOST_REQUIRE(nzbInfo);
 					BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
@@ -584,7 +584,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			}
 			else if (category == "placement")
 			{
-				// T7 placement: =yencryption must sit on its canonical physical
+				// Placement: =yencryption must sit on its canonical physical
 				// line. RestoreControlLines enforces the structural layout
 				// (line 1 =ybegin, optional line 2 =ypart, then =yencryption,
 				// footer =yend); a header on the wrong line fails restoration →
@@ -655,7 +655,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 
 BOOST_AUTO_TEST_CASE(IndexAllocationTestVectors)
 {
-	// VEC-07 (CR-02): uploader index allocation must skip candidate indices
+	// Index framing rule (Body Std v1.2 §8): uploader index allocation must skip candidate indices
 	// whose uint32_be encoding contains 0x0A/0x0D. The receiver-side mirror is
 	// the bootstrap forbidden-byte reject (see ForbiddenSegmentIndexByteRejectTest);
 	// this dispatch validates the allocation schema itself.
@@ -713,7 +713,7 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 
 	const auto fixture = LoadFixture("nzb_segment_identity.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 33U);
+	BOOST_REQUIRE_EQUAL(vectors.size(), 10U);
 
 	for (const auto& item : vectors)
 	{
@@ -733,18 +733,20 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 			std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
 			std::filesystem::remove(tempNzb);
 
-			if (category == "valid_identity" || category == "legacy_attribute_ignored")
+			if (category == "valid_identity")
 			{
 				BOOST_REQUIRE(parsed);
 				BOOST_REQUIRE(nzbInfo);
 				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
-			}
-			else if (category == "invalid_identity")
-			{
-				// Password-only without explicit encryption provenance is an archive password release.
-				BOOST_REQUIRE(parsed);
-				BOOST_REQUIRE(nzbInfo);
-				BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
+				// Segment identity comes only from article bootstrap bytes
+				// (Body Std v1.2 §8): the NZB never assigns an index.
+				for (const auto& fileInfo : *nzbInfo->GetFileList())
+				{
+					for (const auto& article : *fileInfo->GetArticles())
+					{
+						BOOST_CHECK(!article->HasSegmentIndex());
+					}
+				}
 			}
 			else if (category == "unencrypted_compatibility")
 			{
@@ -810,7 +812,7 @@ BOOST_AUTO_TEST_CASE(ProviderFailoverOnAuthFailureTest)
 	const auto tag = HexToBin("244b59a79fd448b7d2fa6fdd378e3153");
 	std::vector<uint8_t> plaintext;
 
-	// Provider 1 uses tampered NZB index 2: auth failure and zero output.
+	// Provider 1 yields a wrong index 2: auth failure and zero output.
 	auto status = decryptor.AuthenticateAndDecrypt(
 		ciphertext.data(), ciphertext.size(), salt.data(), tag.data(), 2, plaintext);
 	BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
@@ -819,7 +821,7 @@ BOOST_AUTO_TEST_CASE(ProviderFailoverOnAuthFailureTest)
 		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
 	BOOST_CHECK(firstProvider == ArticleDownloader::adFailed);
 
-	// Provider 2 uses authoritative index 1: authenticated plaintext succeeds.
+	// Provider 2 yields the correct index 1: authenticated plaintext succeeds.
 	status = decryptor.AuthenticateAndDecrypt(
 		ciphertext.data(), ciphertext.size(), salt.data(), tag.data(), 1, plaintext);
 	BOOST_CHECK(status == YEncDecryptor::Status::Ok);

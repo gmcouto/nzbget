@@ -1105,16 +1105,6 @@ bool DiskState::SaveFileInfo(FileInfo* fileInfo, StateDiskFile& outfile, bool ar
 	outfile.PrintLine("%s", fileInfo->GetOrigname() ? fileInfo->GetOrigname() : "");
 	outfile.PrintLine("%s", fileInfo->GetOutputFilename().c_str());
 
-	// Version 8+: file identity line (fileOrdinal,totalFiles,segmentIndexBase; 0,0,0 if unset)
-	if (fileInfo->HasFileOrdinal() && fileInfo->HasTotalFiles() && fileInfo->HasSegmentIndexBase())
-	{
-		outfile.PrintLine("%u,%u,%u", fileInfo->GetFileOrdinal().value(), fileInfo->GetTotalFiles().value(), fileInfo->GetSegmentIndexBase().value());
-	}
-	else
-	{
-		outfile.PrintLine("0,0,0");
-	}
-
 	outfile.PrintLine("%i,%i", (int)fileInfo->GetFilenameConfirmed(), (int)fileInfo->GetTime());
 
 	uint32 High, Low;
@@ -1138,6 +1128,7 @@ bool DiskState::SaveFileInfo(FileInfo* fileInfo, StateDiskFile& outfile, bool ar
 		outfile.PrintLine("%i", (int)fileInfo->GetArticles()->size());
 		for (ArticleInfo* articleInfo : fileInfo->GetArticles())
 		{
+			// Version 8+: third field is the bootstrap-extracted segmentIndex (0 if not yet known)
 			outfile.PrintLine("%i,%i,%u", articleInfo->GetPartNumber(), articleInfo->GetSize(),
 				articleInfo->GetSegmentIndex().value_or(0));
 			outfile.PrintLine("%s", articleInfo->GetMessageId());
@@ -1196,65 +1187,6 @@ bool DiskState::LoadFileInfo(FileInfo* fileInfo, StateDiskFile& infile, int form
 		{
 			fileInfo->SetOutputFilename(buf);
 		}
-	}
-
-	if (formatVersion >= 8)
-	{
-		if (!infile.ReadLine(buf, sizeof(buf))) goto error;
-
-		uint32 fileOrdinal = 0;
-		uint32 totalFiles = 0;
-		uint32 segmentIndexBase = 0;
-
-		std::string_view lineView(buf);
-		size_t comma1 = lineView.find(',');
-		if (comma1 == std::string_view::npos) goto error;
-		size_t comma2 = lineView.find(',', comma1 + 1);
-		if (comma2 == std::string_view::npos) goto error;
-		if (lineView.find(',', comma2 + 1) != std::string_view::npos) goto error;
-
-		std::string_view ordStr = lineView.substr(0, comma1);
-		std::string_view totalStr = lineView.substr(comma1 + 1, comma2 - (comma1 + 1));
-		std::string_view baseStr = lineView.substr(comma2 + 1);
-
-		if (!ParseUint32Token(ordStr, fileOrdinal) ||
-			!ParseUint32Token(totalStr, totalFiles) ||
-			!ParseUint32Token(baseStr, segmentIndexBase))
-		{
-			goto error;
-		}
-
-		if (fileOrdinal == 0 && totalFiles == 0 && segmentIndexBase == 0)
-		{
-			fileInfo->SetFileOrdinal(std::nullopt);
-			fileInfo->SetTotalFiles(std::nullopt);
-			fileInfo->SetSegmentIndexBase(std::nullopt);
-		}
-		else if (fileOrdinal >= 1 && totalFiles >= 1 && fileOrdinal <= totalFiles && segmentIndexBase >= 1)
-		{
-			if (fileSummary)
-			{
-				fileInfo->SetFileOrdinal(fileOrdinal);
-				fileInfo->SetTotalFiles(totalFiles);
-				fileInfo->SetSegmentIndexBase(segmentIndexBase);
-			}
-			else if (!fileInfo->HasFileOrdinal())
-			{
-				fileInfo->SetFileOrdinal(fileOrdinal);
-				fileInfo->SetTotalFiles(totalFiles);
-				fileInfo->SetSegmentIndexBase(segmentIndexBase);
-			}
-		}
-		else
-		{
-			goto error;
-		}
-	}
-	else
-	{
-		fileInfo->SetFileOrdinal(std::nullopt);
-		fileInfo->SetTotalFiles(std::nullopt);
-		fileInfo->SetSegmentIndexBase(std::nullopt);
 	}
 
 	if (formatVersion >= 5)

@@ -103,7 +103,7 @@ void Decoder::Clear()
 	m_lineBuf.SetLength(0);
 	m_encrypted = false;
 	m_authFailed = false;
-	// T3: reset the bootstrap-extracted segment index between articles — a stale
+	// Reset the bootstrap-extracted segment index between articles — a stale
 	// index from a previous article would corrupt this article's key derivation
 	// and bypass dual-bootstrap agreement.
 	m_segmentIndex = 0;
@@ -133,13 +133,13 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 		return len;
 	}
 
-	// T9 / C2-05 (Control Std v1.2 "Transport boundary"): consumers MUST
+	// Control Std v1.2 §9 "Transport boundary": consumers MUST
 	// dot-unstuff before line splitting / bootstrap extraction. The NNTP
 	// connection layer delivers raw socket bytes, so this decoder is the
 	// single unstuffing owner. RFC 3977 §3.1.1: a '.' at line start followed
 	// by '.' (or by CRLF) is the escape — strip exactly one dot; "\r\n.\r\n"
 	// is the terminator itself (not unstuffed).
-	// CR-01-R4: the restored block produced by ProcessRestoredBlock has
+	// The restored block produced by ProcessRestoredBlock has
 	// already been unstuffed (its source chunks went through UnstuffInPlace
 	// when they were accumulated into m_wireBuffer). Feeding it through the
 	// unstuffing pass again would corrupt yEnc data lines that legitimately
@@ -368,7 +368,7 @@ void Decoder::UnstuffInPlace(char* buffer, int& len)
 	int read = 0;
 	int write = 0;
 
-	// WR-01: if previous chunk ended exactly after a line-start '.', and this
+	// If the previous chunk ended exactly after a line-start '.', and this
 	// chunk starts with '.', then the pair ".." was split across the chunk
 	// boundary. Strip the second dot so only one dot is emitted in total.
 	if (m_unstuffPendingDot)
@@ -405,7 +405,7 @@ void Decoder::UnstuffInPlace(char* buffer, int& len)
 			}
 			else if (read + 2 == len && buffer[read + 1] == '\r')
 			{
-				// WR-01: chunk ends exactly at ".\r" (terminator in progress).
+				// Chunk ends exactly at ".\r" (terminator in progress).
 				// Keep both bytes verbatim so the terminator survives.
 				buffer[write++] = buffer[read++];
 				buffer[write++] = buffer[read++];
@@ -413,7 +413,7 @@ void Decoder::UnstuffInPlace(char* buffer, int& len)
 			}
 			else if (read + 1 == len)
 			{
-				// WR-01: chunk ends exactly at line-start '.'. Keep the dot
+				// Chunk ends exactly at line-start '.'. Keep the dot
 				// verbatim (it may be the article terminator ".\r\n" or ".\n",
 				// or the first dot of a split stuffed pair ".."). Record
 				// pending state so a following dot in the next chunk is stripped.
@@ -597,7 +597,7 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	const void* src = buffer;
 	void* dst = outbuf;
 
-	// CR-01-R4: in wire mode the restored block has already been dot-unstuffed
+	// In wire mode the restored block has already been dot-unstuffed
 	// exactly once (UnstuffInPlace ran on the raw wire chunks). rapidyenc's
 	// incremental decoder is hardwired isRaw and would strip every line-start
 	// '.' a second time, corrupting restored yEnc data lines beginning with
@@ -756,7 +756,7 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 	m_lineBuf.SetLength(0);
 	m_wireProcessed = true;
 
-	// CR-01-R4: cleanBlock's source chunks were unstuffed exactly once when
+	// cleanBlock's source chunks were unstuffed exactly once when
 	// accumulated into m_wireBuffer; do not run a second unstuffing pass here
 	// or restored yEnc data lines beginning with '.' get mangled.
 	DecodeBuffer(cleanBlock.data(), static_cast<int>(cleanBlock.size()), /*alreadyUnstuffed=*/true);
@@ -801,7 +801,7 @@ Decoder::EStatus Decoder::CheckYenc()
 	debug("Expected crc32=%x", m_expectedCRC);
 	debug("Calculated crc32=%x", m_calculatedCRC);
 
-	// WR-01-R4: check auth failure before completeness so a truncated
+	// Check auth failure before completeness so a truncated
 	// encrypted article is classified as dsAuthFailed (provider failover
 	// tier), not dsArticleIncomplete.
 	if (m_authFailed)

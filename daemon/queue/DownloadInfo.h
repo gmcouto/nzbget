@@ -153,20 +153,6 @@ public:
 	void SetFilename(const char* filename) { m_filename = filename ? filename : ""; }
 	void SetOrigname(const char* origname) { m_origname = origname; }
 	const char* GetOrigname() { return m_origname; }
-	std::optional<uint32> GetFileOrdinal() const { return m_fileOrdinal; }
-	void SetFileOrdinal(std::optional<uint32> fileOrdinal) { m_fileOrdinal = fileOrdinal; }
-	void SetFileOrdinal(uint32 fileOrdinal) { m_fileOrdinal = fileOrdinal; }
-	bool HasFileOrdinal() const { return m_fileOrdinal.has_value(); }
-	std::optional<uint32> GetTotalFiles() const { return m_totalFiles; }
-	void SetTotalFiles(std::optional<uint32> totalFiles) { m_totalFiles = totalFiles; }
-	void SetTotalFiles(uint32 totalFiles) { m_totalFiles = totalFiles; }
-	bool HasTotalFiles() const { return m_totalFiles.has_value(); }
-	std::optional<uint32> GetSegmentIndexBase() const { return m_segmentIndexBase; }
-	void SetSegmentIndexBase(std::optional<uint32> segmentIndexBase) { m_segmentIndexBase = segmentIndexBase; }
-	void SetSegmentIndexBase(uint32 segmentIndexBase) { m_segmentIndexBase = segmentIndexBase; }
-	bool HasSegmentIndexBase() const { return m_segmentIndexBase.has_value(); }
-	bool GetDuplicateArticles() const { return m_duplicateArticles; }
-	void SetDuplicateArticles(bool duplicateArticles) { m_duplicateArticles = duplicateArticles; }
 	void MakeValidFilename();
 	bool GetFilenameConfirmed() { return m_filenameConfirmed; }
 	void SetFilenameConfirmed(bool filenameConfirmed) { m_filenameConfirmed = filenameConfirmed; }
@@ -271,10 +257,6 @@ private:
 	CString m_parSetId;
 	bool m_flushLocked = false;
 	std::string m_hardLinkPath;
-	std::optional<uint32> m_fileOrdinal;
-	std::optional<uint32> m_totalFiles;
-	std::optional<uint32> m_segmentIndexBase;
-	bool m_duplicateArticles = false;
 
 	static int m_idGen;
 	static int m_idMax;

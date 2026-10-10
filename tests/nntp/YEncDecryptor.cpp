@@ -206,7 +206,7 @@ BOOST_AUTO_TEST_CASE(DecoderEncryptedIntegrationTest)
 	decoder.SetCrcCheck(false); // Testing payload exclusion and decryption
 	YEncDecryptor decryptor("test123");
 	decoder.SetDecryptor(&decryptor);
-	// In v1.1, segment index is discovered directly from the wire bytes
+	// The segment index is discovered directly from the wire bytes
 
 	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
 	std::string yencBody = yEncSimpleEncode(ciphertext);
@@ -709,14 +709,14 @@ BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
 
 	auto st = decryptor.AuthenticateAndDecrypt(ct, sizeof(ct), salt, badTag, 1, outPlaintext);
 	BOOST_CHECK(st == YEncDecryptor::Status::AuthFailed);
-	// C1-05: outPlaintext must be cleared and empty on AuthFailed
+	// outPlaintext must be cleared and empty on AuthFailed
 	BOOST_CHECK(outPlaintext.empty());
 }
 
 BOOST_AUTO_TEST_CASE(ForbiddenSegmentIndexByteRejectTest)
 {
-	// CR-02 (Body Std v1.2): any uint32_be(segmentIndex) byte 0x0A/0x0D would split
-	// Line 1 on the wire. Bootstrap extraction must reject (Status::Error).
+	// Index framing rule (Body Std v1.2 §8): any uint32_be(segmentIndex) byte
+	// 0x0A/0x0D would split Line 1 on the wire. Bootstrap extraction must reject (Status::Error).
 	// Wire line 1: [16B salt][4B BE index][2B FF1 ct] — same salt as canonical vectors.
 	struct Case
 	{
@@ -747,6 +747,14 @@ BOOST_AUTO_TEST_CASE(ForbiddenSegmentIndexByteRejectTest)
 		BOOST_CHECK(plaintext.empty());
 		BOOST_CHECK(salt.empty());
 		BOOST_CHECK_EQUAL(extractedIndex, 0U);
+
+		// The same rule applies to the =yencryption index token (body-only header).
+		std::string header = "=yencryption cipher=XChaCha20-Poly1305 "
+			"salt=1a2b3c4d5e6f7890abcdef1234567890 index=";
+		header += testCase.indexHex;
+		header += " tag=0cd77ce245a654463f90b945b1d22d5b";
+		YEncDecryptor::YEncryptionHeader parsed;
+		BOOST_CHECK(!YEncDecryptor::ParseYEncryption(header.data(), header.size(), parsed));
 	}
 
 	// Control: a safe index (11) with the same salt still passes bootstrap extraction.

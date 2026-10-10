@@ -255,13 +255,12 @@ access to your computer.
 -----------------------------------------------------------
 
 NZBGet automatically downloads, authenticates, and decrypts releases protected by
-yEnc body and control-line encryption according to the v1.1 Self-Describing Article
-Bootstrap Standard.
+yEnc body and control-line encryption according to the experimental yEnc Body and
+Control Lines Encryption Standards v1.2.
 
 When an NZB contains `<meta type="yenc_encrypted">true</meta>` and `<meta type="password">`,
 the embedded password is used automatically without user intervention. NZBGet extracts
-segment identity directly from article wire bytes, requiring no non-standard NZB segment
-attributes.
+segment identity directly from article wire bytes; segments are standard NZB 1.1.
 
 If an encrypted NZB does not contain an embedded password, you can provide the password:
 - Via Web-interface: Click on the download item in the queue, edit its properties, and set the "Password" field.

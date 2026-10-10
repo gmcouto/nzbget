@@ -436,7 +436,7 @@ static bool HexToBytesStrict(const char* hex, size_t hexLen, uint8_t* outBytes, 
 YEncDecryptor::YEncDecryptor(const std::string& password)
 	: m_password(password)
 {
-	// WR-04: a libsodium initialization failure is a hard crypto error, not a
+	// A libsodium initialization failure is a hard crypto error, not a
 	// condition to silently continue from — every subsequent AEAD/FF1 call
 	// would misbehave. Record it as a typed failure consumed by the Status
 	// surface (Error) instead of being swallowed.
@@ -556,7 +556,7 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 {
 	outPlaintext.clear();
 
-	// WR-04: sodium_init() failure recorded at construction surfaces as a
+	// A sodium_init() failure recorded at construction surfaces as a
 	// typed Error on the first crypto call instead of undefined behavior.
 	if (m_sodiumInitFailed)
 	{
@@ -652,8 +652,8 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 			return Status::Error;
 		}
 
-		// CR-02 (Body Std v1.2): any uint32_be(segmentIndex) byte 0x0A/0x0D would
-		// split Line 1 on the wire. Reject the bootstrap instead of decrypting.
+		// Index framing rule (Body Std v1.2 §8): any uint32_be(segmentIndex) byte
+		// 0x0A/0x0D would split Line 1 on the wire. Reject the bootstrap instead of decrypting.
 		if (wireData[16] == 0x0A || wireData[16] == 0x0D ||
 			wireData[17] == 0x0A || wireData[17] == 0x0D ||
 			wireData[18] == 0x0A || wireData[18] == 0x0D ||
@@ -809,6 +809,16 @@ bool YEncDecryptor::ParseYEncryption(
 	{
 		return false;
 	}
+	// Index framing rule (Body Std v1.2 §8): reject any index whose
+	// uint32_be bytes contain 0x0A or 0x0D (PROVIDER_FAILOVER).
+	for (int shift = 24; shift >= 0; shift -= 8)
+	{
+		const uint8_t indexByte = static_cast<uint8_t>((parsedIndex >> shift) & 0xFF);
+		if (indexByte == 0x0A || indexByte == 0x0D)
+		{
+			return false;
+		}
+	}
 
 	outHeader.cipher = "XChaCha20-Poly1305";
 	outHeader.saltHex = std::string(saltHex);
@@ -931,7 +941,7 @@ bool YEncDecryptor::RestoreControlLines(
 	std::vector<uint8_t>& outLine1Salt,
 	YEncryptionHeader* outHeader)
 {
-	// T7 header-loop semantics (Control Std v1.2 §5 step 4): this decoder uses
+	// Header-loop semantics (Control Std v1.2 §5 step 4): this decoder uses
 	// the structural-assumption approach — it decrypts the known control-line
 	// positions (Line 1 =ybegin, optional =ypart, =yencryption, footer =yend)
 	// instead of probing each middle line. For canonical producers this is

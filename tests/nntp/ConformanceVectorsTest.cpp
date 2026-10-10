@@ -214,17 +214,23 @@ BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectors)
 	BOOST_REQUIRE_EQUAL(nonceVectors.size(), 8);
 	BOOST_REQUIRE_EQUAL(tweakVectors.size(), 7);
 
-	const auto bodySalt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
-	const auto controlSalt = HexToBin("4b376d5839704c32715238764e34775a");
-
 	for (const auto& item : nonceVectors)
 	{
 		const auto& vector = item.as_object();
 		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
 		{
 			YEncDecryptor decryptor("test123");
+#ifdef NZBGET_TESTING_HOOKS
+			// Test-only hook: seed the fixture's master key directly, skipping
+			// the 64 MiB Argon2id derivation (the key itself is the fixture
+			// constant, so determinism is preserved).
+			decryptor.SetMasterKeyForTesting(HexToBin(JsonString(vector, "key_hex")).data());
+			BOOST_REQUIRE(decryptor.GetCachedMasterKey().size() == 32);
+#else
+			const auto bodySalt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 			BOOST_REQUIRE(decryptor.EnsureMasterKey(bodySalt.data()));
 			BOOST_REQUIRE_EQUAL(BinToHex(decryptor.GetCachedMasterKey()), JsonString(vector, "key_hex"));
+#endif
 			uint8_t nonce[24];
 			BOOST_REQUIRE(decryptor.DeriveBodyNonce(JsonUint32(vector, "segment_index"), nonce));
 			BOOST_CHECK_EQUAL(BinToHex(nonce, sizeof(nonce)), JsonString(vector, "expected_nonce_hex"));
@@ -237,8 +243,14 @@ BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectors)
 		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
 		{
 			YEncDecryptor decryptor("test123");
+#ifdef NZBGET_TESTING_HOOKS
+			decryptor.SetMasterKeyForTesting(HexToBin(JsonString(vector, "master_key_hex")).data());
+			BOOST_REQUIRE(decryptor.GetCachedMasterKey().size() == 32);
+#else
+			const auto controlSalt = HexToBin("4b376d5839704c32715238764e34775a");
 			BOOST_REQUIRE(decryptor.EnsureMasterKey(controlSalt.data()));
 			BOOST_REQUIRE_EQUAL(BinToHex(decryptor.GetCachedMasterKey()), JsonString(vector, "master_key_hex"));
+#endif
 			uint8_t key[32];
 			uint8_t tweak[8];
 			BOOST_REQUIRE(decryptor.DeriveControlKeyAndTweak(

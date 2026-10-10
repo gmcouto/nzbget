@@ -19,6 +19,10 @@ if(EXTERNAL_DEPS)
 	add_dependencies(${TESTS_TARGET} ${EXTERNAL_DEPS})
 endif()
 
+# Enables the test-only YEncDecryptor::SetMasterKeyForTesting hook so vector
+# tests can seed the key cache without the 64 MiB Argon2id KDF.
+target_compile_definitions(${TESTS_TARGET} PRIVATE NZBGET_TESTING_HOOKS)
+
 target_link_libraries(${TESTS_TARGET} PRIVATE libnzbget)
 
 apply_sanitizers(${TESTS_TARGET})

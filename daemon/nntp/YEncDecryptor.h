@@ -158,6 +158,25 @@ public:
 	const std::vector<uint8_t>& GetCachedMasterKey() const { return m_cachedMasterKey; }
 	bool IsSodiumInitFailed() const { return m_sodiumInitFailed; }
 
+#ifdef NZBGET_TESTING_HOOKS
+	// Test-only surface: seeds the key cache directly so nonce/tweak vector
+	// tests are deterministic without paying the 64 MiB Argon2id KDF per case.
+	// Never compiled into release builds (define NZBGET_TESTING_HOOKS in the
+	// test target only). The seeded key is still zeroized by ClearMasterKey.
+	void SetMasterKeyForTesting(const uint8_t key[32], const uint8_t salt[16] = nullptr)
+	{
+		m_cachedMasterKey.assign(key, key + 32);
+		if (salt)
+		{
+			m_cachedSalt.assign(salt, salt + 16);
+		}
+		else
+		{
+			m_cachedSalt.assign(16, 0);
+		}
+	}
+#endif
+
 private:
 	std::string m_password;
 	bool m_sodiumInitFailed = false;

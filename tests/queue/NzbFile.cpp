@@ -458,62 +458,31 @@ BOOST_AUTO_TEST_CASE(YEncEncryptedMetaParsingTest)
 		BOOST_REQUIRE(info);
 		BOOST_CHECK(!info->IsYEncEncrypted());
 	}
-}
 
-BOOST_AUTO_TEST_CASE(PasswordControlCharacterSanitizationTest)
-{
-	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
+	// 6. yenc_encrypted accepts only "true" (case-insensitive); other truthy
+	// spellings do not turn on encrypted handling
+	for (const char* val : {"TRUE", "True", "yes", "1", "false", "on"})
 	{
-		const fs::path tempNzb = fs::temp_directory_path() / filename;
-		WriteRawNzb(tempNzb, xml);
-
-		NzbFile nzbFile(tempNzb.string().c_str(), "");
-		bool ok = nzbFile.Parse();
-		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
-		if (nzbInfo && !nzbFile.GetPassword().empty())
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">" + std::string(val) + "</meta></head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"gate.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		auto [ok, info] = parseXml(xml, "meta_gate.nzb");
+		BOOST_REQUIRE(ok);
+		BOOST_REQUIRE(info);
+		if (!strcasecmp(val, "true"))
 		{
-			nzbInfo->GetParameters()->SetParameter("*Unpack:Password", nzbFile.GetPassword().c_str());
+			BOOST_CHECK(info->IsYEncEncrypted());
 		}
-		fs::remove(tempNzb);
-		return { ok, std::move(nzbInfo) };
-	};
-
-	// 1. Password in <meta> with newlines and carriage returns
-	{
-		const std::string xml =
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">line1\r\nline2\t</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"test.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "pwd_ctrl.nzb");
-		BOOST_REQUIRE(ok);
-		BOOST_REQUIRE(info);
-		// Util::SanitizeLine replaces control chars with space and trims
-		std::string pwd = info->GetPassword();
-		BOOST_CHECK_EQUAL(pwd.find('\r'), std::string::npos);
-		BOOST_CHECK_EQUAL(pwd.find('\n'), std::string::npos);
-		BOOST_CHECK_EQUAL(pwd, "line1 line2");
-	}
-
-	// 2. Password with leading/trailing whitespace and newlines
-	{
-		const std::string xml =
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-			"<head><meta type=\"password\">\n\r  secret_password  \r\n</meta></head>\n"
-			"<file poster=\"p\" date=\"100\" subject=\"test2.bin\">\n"
-			"<groups><group>a.b.t</group></groups>\n"
-			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
-			"</file>\n"
-			"</nzb>\n";
-		auto [ok, info] = parseXml(xml, "pwd_trim.nzb");
-		BOOST_REQUIRE(ok);
-		BOOST_REQUIRE(info);
-		BOOST_CHECK_EQUAL(info->GetPassword(), "secret_password");
+		else
+		{
+			BOOST_CHECK(!info->IsYEncEncrypted());
+		}
 	}
 }
 

@@ -262,5 +262,6 @@ When an NZB contains `<meta type="yenc_encrypted">true</meta>` and `<meta type="
 the embedded password is used automatically without user intervention. NZBGet extracts
 segment identity directly from article wire bytes; segments are standard NZB 1.1.
 
-The decryption password comes only from `<meta type="password">` in the NZB. An encrypted
-NZB without it is rejected when it is added to the queue.
+The decryption password is the job's password: `<meta type="password">` from the NZB, which
+can be changed like any other job password (`*Unpack:Password`). An encrypted NZB without a
+password is rejected when it is added to the queue.

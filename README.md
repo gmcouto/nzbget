@@ -67,8 +67,8 @@ NZBGet supports downloading releases protected by yEnc body and control-line enc
 (XChaCha20-Poly1305 and Radix 253 FF1) conforming to the experimental yEnc Body and
 Control Lines Encryption Standards v1.2. Releases marked with
 `<meta type="yenc_encrypted">true</meta>` in the NZB are authenticated and decrypted
-automatically; the password comes only from `<meta type="password">` in the NZB, and an
-encrypted NZB without it is rejected when it is added to the queue. Unauthenticated
+automatically with the job's password (`<meta type="password">` from the NZB, editable as
+`*Unpack:Password`); an encrypted NZB without a password is rejected when it is added to the queue. Unauthenticated
 ciphertext is buffered only in decoder memory and never written to disk or cache.
 
 See [Encrypted Releases](docs/HOW_TO_USE.md) for details.

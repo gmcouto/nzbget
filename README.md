@@ -65,20 +65,13 @@ More information available at https://nzbget.com
 
 NZBGet supports downloading releases protected by yEnc body and control-line encryption
 (XChaCha20-Poly1305 and Radix 253 FF1) conforming to the experimental yEnc Body and
-Control Lines Encryption Standards v1.2.
+Control Lines Encryption Standards v1.2. Releases marked with
+`<meta type="yenc_encrypted">true</meta>` in the NZB are authenticated and decrypted
+automatically; the password comes only from `<meta type="password">` in the NZB, and an
+encrypted NZB without it is rejected when it is added to the queue. Unauthenticated
+ciphertext is buffered only in decoder memory and never written to disk or cache.
 
-- **Self-Describing Article Wire Bootstrap**: Decodes the 20-byte Line 1 prefix containing the
-  16-byte raw salt and 4-byte big-endian uint32 `segmentIndex`, validating dual-bootstrap cross-header
-  agreement against the canonical 5-token `=yencryption` line before decrypting.
-- **Standard NZB 1.1 Support**: NZB segments are standard NZB 1.1; segment identity comes from the article
-  bytes. Encrypted releases are marked with `<meta type="yenc_encrypted">true</meta>`.
-- **Automatic Decryption**: Releases containing `<meta type="yenc_encrypted">true</meta>` and
-  `<meta type="password">` decrypt automatically without manual intervention.
-- **Password Source**: The decryption password comes only from `<meta type="password">` in the NZB. An encrypted
-  NZB without it is rejected when it is added to the queue.
-- **Safe Staging**: Unauthenticated ciphertext is buffered in memory or temporary files and only committed
-  to destination files after Poly1305 authentication succeeds. Authentication failures and wire header
-  mismatches trigger server failover before failing the article.
+See [Encrypted Releases](docs/HOW_TO_USE.md) for details.
 
 ## Contribution
 

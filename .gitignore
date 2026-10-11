@@ -92,6 +92,5 @@ docker/config
 .*
 !/.gitignore
 !/.gitattributes
-!/.gitguardian.yaml
 !.github/
 !.github/**

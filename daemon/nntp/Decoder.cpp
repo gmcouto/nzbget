@@ -67,19 +67,6 @@ Decoder::Decoder()
 
 Decoder::~Decoder() = default;
 
-void Decoder::SetPassword(const char* password)
-{
-	if (!m_decryptor)
-	{
-		m_ownDecryptor = std::make_unique<YEncDecryptor>(password ? password : "");
-		m_decryptor = m_ownDecryptor.get();
-	}
-	else
-	{
-		m_decryptor->SetPassword(password ? password : "");
-	}
-}
-
 void Decoder::Clear()
 {
 	m_format = efUnknown;
@@ -234,7 +221,7 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 			}
 			else if (m_wireBuffer.size() > 8192)
 			{
-				// T-08-06: bound line 1 staging to 8KB
+				// Bound line 1 staging to 8KB
 				m_encryptedWireMode = false;
 				m_lineBuf.Append(m_wireBuffer.data(), static_cast<int>(m_wireBuffer.size()));
 				m_wireBuffer.clear();
@@ -272,8 +259,10 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 
 	if (m_body && m_format == efYenc)
 	{
-		if ((len >= 13 && !strncmp(buffer, "=yencryption ", 13)) ||
-			(len >= 7 && !strncmp(buffer, "=ypart ", 7)))
+		// The adapter strips =yencryption before ordinary parsing; only
+		// encrypted wire mode can legitimately see the header mid-body here
+		// (a stray =yencryption in an unencrypted article is ordinary data).
+		if (m_encryptedWireMode && len >= 13 && !strncmp(buffer, "=yencryption ", 13))
 		{
 			m_body = false;
 			m_lineBuf.Append(buffer, len);
@@ -319,13 +308,9 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 			{
 				const char* next = end + 1;
 				int rem = m_lineBuf.Length() - (int)(next - m_lineBuf);
-				if (rem >= 13 && !strncmp(next, "=yencryption ", 13))
-				{
-					m_body = false;
-					line = end + 1;
-					continue;
-				}
-				if (rem >= 7 && !strncmp(next, "=ypart ", 7))
+				// Only encrypted wire mode can see a mid-body =yencryption
+				// header here; ordinary yEnc never carries it as data.
+				if (m_encryptedWireMode && rem >= 13 && !strncmp(next, "=yencryption ", 13))
 				{
 					m_body = false;
 					line = end + 1;
@@ -573,21 +558,17 @@ void Decoder::ProcessYenc(char* buffer, int len)
 void Decoder::ParseEncryption(const char* buffer, int len)
 {
 	m_encrypted = true;
-	uint32_t parsedIndex = 0;
-	if (!YEncDecryptor::ParseYEncryption(buffer, len, m_cipher, m_salt, m_tag, parsedIndex))
+	YEncDecryptor::YEncryptionHeader header;
+	if (!YEncDecryptor::ParseYEncryption(buffer, len, header))
 	{
 		m_authFailed = true;
 	}
 	else
 	{
-		if (m_segmentIndex == 0)
-		{
-			m_segmentIndex = parsedIndex;
-		}
-		else if (m_segmentIndex != parsedIndex)
-		{
-			m_authFailed = true;
-		}
+		m_cipher = header.cipher;
+		memcpy(m_salt, header.salt.data(), 16);
+		memcpy(m_tag, header.tag.data(), 16);
+		m_segmentIndex = header.segmentIndex;
 	}
 	m_body = true;
 }
@@ -723,7 +704,7 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 	std::vector<uint8_t> line1Salt;
 	YEncDecryptor::YEncryptionHeader header;
 	bool ok = m_decryptor->RestoreControlLines(
-		wireBlock.data(), wireBlock.size(), m_segmentIndex, cleanBlock, line1Salt, &header
+		wireBlock.data(), wireBlock.size(), cleanBlock, line1Salt, &header
 	);
 	if (!ok)
 	{
@@ -848,25 +829,6 @@ Decoder::EStatus Decoder::CheckYenc()
 	}
 
 	return dsFinished;
-}
-
-bool Decoder::AuthenticateAndDecrypt(const uint8_t* ciphertext, size_t cipherLen, std::vector<uint8_t>& outPlaintext)
-{
-	outPlaintext.clear();
-	if (!m_decryptor)
-	{
-		return false;
-	}
-	YEncDecryptor::Status st = m_decryptor->AuthenticateAndDecrypt(
-		ciphertext, cipherLen, m_salt, m_tag, m_segmentIndex, outPlaintext
-	);
-	if (st != YEncDecryptor::Status::Ok)
-	{
-		m_authFailed = true;
-		outPlaintext.clear();
-		return false;
-	}
-	return true;
 }
 
 

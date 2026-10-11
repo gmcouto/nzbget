@@ -351,8 +351,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 
 	// Test feed in chunks
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
-	decoder.SetSegmentIndex(segmentIndex);
+	decoder.SetDecryptor(&encDec);
 	decoder.SetCrcCheck(true);
 
 	size_t chunkSize = 32;
@@ -387,7 +386,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 	// Multipart lines:
 	// line 1: =ybegin part=1 total=2 line=128 size=32 name=multi.dat
 	// line 2: =ypart begin=1 end=16
-	// line 3: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b
+	// line 3: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b
 	// line 4: <yenc encoded ct>
 	// line 5: =yend size=16 part=1 pcrc32=...
 	// line 6: .
@@ -441,8 +440,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 	fullWire.append("\r\n.\r\n");
 
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
-	decoder.SetSegmentIndex(segmentIndex);
+	decoder.SetDecryptor(&encDec);
 	decoder.SetCrcCheck(true);
 
 	size_t chunkSize = 25;
@@ -518,7 +516,7 @@ BOOST_AUTO_TEST_CASE(DecoderDualBootstrapMismatchFailsClosedTest)
 
 	// Test Decoder discovers from wire without SetSegmentIndex, but fails closed on Dual-Bootstrap mismatch
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
+	decoder.SetDecryptor(&encDec);
 	decoder.SetCrcCheck(true);
 
 	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
@@ -546,7 +544,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireBufferOverflowTest)
 	line1Wire += "\r\n";
 
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
+	decoder.SetDecryptor(&encDec);
 
 	// Feed line 1 to activate encrypted wire mode
 	decoder.DecodeBuffer(line1Wire.data(), static_cast<int>(line1Wire.size()));
@@ -622,8 +620,9 @@ BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
 		return fullWire;
 	};
 
+	YEncDecryptor decryptor(password);
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
+	decoder.SetDecryptor(&decryptor);
 
 	// Article 1: index 1
 	{
@@ -713,7 +712,7 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	};
 
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
+	decoder.SetDecryptor(&encDec);
 
 	// 1. Already-unstuffed input decodes unchanged.
 	{
@@ -791,13 +790,13 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 
 	auto decodeWhole = [&](Decoder& d)
 	{
-		d.SetPassword(password.c_str());
+		d.SetDecryptor(&encDec);
 		d.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
 	};
 
 	auto decodeChunked = [&](Decoder& d, size_t firstChunk)
 	{
-		d.SetPassword(password.c_str());
+		d.SetDecryptor(&encDec);
 		d.DecodeBuffer(fullWire.data(), static_cast<int>(firstChunk));
 		d.DecodeBuffer(fullWire.data() + firstChunk,
 			static_cast<int>(fullWire.size() - firstChunk));
@@ -839,7 +838,7 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 	// boundary alignment of the terminator.
 	{
 		Decoder chunked;
-		chunked.SetPassword(password.c_str());
+		chunked.SetDecryptor(&encDec);
 		size_t tailStart = fullWire.size() - 12;
 		chunked.DecodeBuffer(fullWire.data(), static_cast<int>(tailStart));
 		for (size_t i = tailStart; i < fullWire.size(); ++i)
@@ -981,12 +980,14 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 		return fullWire;
 	};
 
+	YEncDecryptor decryptor(password);
+
 	// 1. Restored data line begins with '.'
 	{
 		std::vector<uint8_t> expectedPlaintext;
 		std::string wire = buildWire(ctSingle, tagSingle, ptSingle, expectedPlaintext);
 		Decoder decoder;
-		decoder.SetPassword(password.c_str());
+		decoder.SetDecryptor(&decryptor);
 		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
 		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
 		BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), segmentIndex);
@@ -1003,7 +1004,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 		std::vector<uint8_t> expectedPlaintext;
 		std::string wire = buildWire(ctDouble, tagDouble, ptDouble, expectedPlaintext);
 		Decoder decoder;
-		decoder.SetPassword(password.c_str());
+		decoder.SetDecryptor(&decryptor);
 		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
 		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
 		BOOST_CHECK_EQUAL_COLLECTIONS(
@@ -1065,7 +1066,8 @@ BOOST_AUTO_TEST_CASE(OrdinaryYencLeadingDotTest)
 	// 2. Ordinary unencrypted article when password is set on the decryptor (e.g. from NZB metadata)
 	{
 		Decoder decoder;
-		decoder.SetPassword("somepassword");
+		YEncDecryptor decryptor("somepassword");
+		decoder.SetDecryptor(&decryptor);
 		decoder.SetCrcCheck(true);
 		std::string buf = wire;
 		int len = decoder.DecodeBuffer(buf.data(), static_cast<int>(buf.size()));
@@ -1097,7 +1099,7 @@ BOOST_AUTO_TEST_CASE(EmbeddedTerminatorNotPrematurelyCompletedTest)
 	chunk1.append("\r\n\r\n.\r\nintermediate_data_after_terminator\r\n");
 
 	Decoder decoder;
-	decoder.SetPassword(password.c_str());
+	decoder.SetDecryptor(&encDec);
 	decoder.DecodeBuffer(chunk1.data(), static_cast<int>(chunk1.size()));
 
 	// An embedded terminator mid-stream must NOT complete the article prematurely:

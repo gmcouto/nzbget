@@ -70,17 +70,21 @@ public:
 	bool GetEof() { return m_eof; }
 	const char* GetArticleFilename() { return m_articleFilename.c_str(); }
 
-	void SetPassword(const char* password);
 	void SetDecryptor(YEncDecryptor* decryptor) { m_decryptor = decryptor; }
-	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
-	uint32 GetSegmentIndex() const { return m_segmentIndex; }
 	bool IsEncrypted() const { return m_encrypted; }
+	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
+
+#ifdef NZBGET_TESTING_HOOKS
+	// Test-only surface: accessors for testing internal decoder wire state.
+	// Never compiled into release builds (define NZBGET_TESTING_HOOKS in the
+	// test target only).
+	uint32 GetSegmentIndex() const { return m_segmentIndex; }
+	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
+	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
 	const uint8_t* GetSalt() const { return m_salt; }
 	const uint8_t* GetTag() const { return m_tag; }
 	const char* GetCipher() const { return m_cipher.c_str(); }
-	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
-	bool AuthenticateAndDecrypt(const uint8_t* ciphertext, size_t cipherLen, std::vector<uint8_t>& outPlaintext);
-	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
+#endif
 
 private:
 	/**
@@ -132,7 +136,6 @@ private:
 	StringBuilder m_lineBuf;
 	Crc32 m_crc32;
 	YEncDecryptor* m_decryptor = nullptr;
-	std::unique_ptr<YEncDecryptor> m_ownDecryptor;
 	uint32 m_segmentIndex = 0;
 	bool m_encrypted = false;
 	bool m_authFailed = false;

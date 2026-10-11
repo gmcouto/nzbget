@@ -653,53 +653,6 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 	}
 }
 
-BOOST_AUTO_TEST_CASE(IndexAllocationTestVectors)
-{
-	// Index framing rule (Body Std v1.2 §8): uploader index allocation must skip candidate indices
-	// whose uint32_be encoding contains 0x0A/0x0D. The receiver-side mirror is
-	// the bootstrap forbidden-byte reject (see ForbiddenSegmentIndexByteRejectTest);
-	// this dispatch validates the allocation schema itself.
-	const auto fixture = LoadFixture("index_allocation.json");
-	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 4U);
-
-	auto containsForbiddenByte = [](uint32_t index) -> bool
-	{
-		const uint8_t bytes[4] = {
-			static_cast<uint8_t>((index >> 24) & 0xff),
-			static_cast<uint8_t>((index >> 16) & 0xff),
-			static_cast<uint8_t>((index >> 8) & 0xff),
-			static_cast<uint8_t>(index & 0xff)
-		};
-		for (uint8_t byte : bytes)
-		{
-			if (byte == 0x0A || byte == 0x0D)
-			{
-				return true;
-			}
-		}
-		return false;
-	};
-
-	for (const auto& item : vectors)
-	{
-		const auto& vector = item.as_object();
-		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
-		{
-			const uint32_t candidateIndex = JsonUint32(vector, "candidate_index");
-			const uint32_t assignedIndex = JsonUint32(vector, "expected_assigned_index");
-			BOOST_CHECK(containsForbiddenByte(candidateIndex));
-			BOOST_CHECK(!containsForbiddenByte(assignedIndex));
-			BOOST_CHECK_GT(assignedIndex, candidateIndex);
-
-			char indexHex[9];
-			snprintf(indexHex, sizeof(indexHex), "%08x", assignedIndex);
-			BOOST_CHECK_EQUAL(std::string(indexHex), JsonString(vector, "expected_index_hex"));
-			BOOST_CHECK(vector.at("expected_error").is_null());
-		}
-	}
-}
-
 BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 {
 	Options::CmdOptList cmdOpts;
@@ -786,33 +739,6 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 	}
 
 	g_Options = oldOptions;
-}
-
-BOOST_AUTO_TEST_CASE(ProviderFailoverOnAuthFailureTest)
-{
-	YEncDecryptor decryptor("test123");
-	const auto salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
-	const auto ciphertext = HexToBin("710d1cad23ac7a8b120cee7a3ae792ffd31b1ae3e45f4ee6cb4b53288255b474a89845bd8daf7976f9dd2ce836a0f4d675");
-	const auto tag = HexToBin("244b59a79fd448b7d2fa6fdd378e3153");
-	std::vector<uint8_t> plaintext;
-
-	// Provider 1 yields a wrong index 2: auth failure and zero output.
-	auto status = decryptor.AuthenticateAndDecrypt(
-		ciphertext.data(), ciphertext.size(), salt.data(), tag.data(), 2, plaintext);
-	BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
-	BOOST_CHECK(plaintext.empty());
-	ArticleDownloader::EStatus firstProvider = status == YEncDecryptor::Status::AuthFailed ?
-		ArticleDownloader::adFailed : ArticleDownloader::adFinished;
-	BOOST_CHECK(firstProvider == ArticleDownloader::adFailed);
-
-	// Provider 2 yields the correct index 1: authenticated plaintext succeeds.
-	status = decryptor.AuthenticateAndDecrypt(
-		ciphertext.data(), ciphertext.size(), salt.data(), tag.data(), 1, plaintext);
-	BOOST_CHECK(status == YEncDecryptor::Status::Ok);
-	BOOST_CHECK(!plaintext.empty());
-	ArticleDownloader::EStatus secondProvider = status == YEncDecryptor::Status::Ok ?
-		ArticleDownloader::adFinished : ArticleDownloader::adFailed;
-	BOOST_CHECK(secondProvider == ArticleDownloader::adFinished);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

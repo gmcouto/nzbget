@@ -32,8 +32,6 @@ public:
 	{
 		Ok,
 		AuthFailed,
-		MalformedHeader,
-		NotEncrypted,
 		Error
 	};
 
@@ -106,44 +104,22 @@ public:
 		return ParseYEncryption(line, line ? strlen(line) : 0, outHeader);
 	}
 
-	// Static helper to parse =yencryption line
-	static bool ParseYEncryption(
-		const char* line,
-		size_t lineLen,
-		std::string& outCipher,
-		uint8_t outSalt[16],
-		uint8_t outTag[16]
-	);
-
-	static bool ParseYEncryption(
-		const char* line,
-		size_t lineLen,
-		std::string& outCipher,
-		uint8_t outSalt[16],
-		uint8_t outTag[16],
-		uint32_t& outSegmentIndex
-	);
-
-	bool RestoreControlLines(
-		const char* wireBlock,
-		size_t wireLen,
-		uint32_t segmentIndex,
-		std::string& outCleanBlock,
-		std::vector<uint8_t>& outLine1Salt,
-		YEncryptionHeader* outHeader = nullptr
-	);
-
+	// Restores the plaintext control lines of an encrypted wire block.
+	// The authoritative segment index is extracted from the Line 1 bootstrap;
+	// dual-bootstrap agreement with the =yencryption header is enforced here.
 	bool RestoreControlLines(
 		const char* wireBlock,
 		size_t wireLen,
 		std::string& outCleanBlock,
 		std::vector<uint8_t>& outLine1Salt,
 		YEncryptionHeader* outHeader = nullptr
-	)
-	{
-		return RestoreControlLines(wireBlock, wireLen, 0, outCleanBlock, outLine1Salt, outHeader);
-	}
+	);
 
+#ifdef NZBGET_TESTING_HOOKS
+	// Test-only surface: uploads never run through the downloader, so the FF1
+	// control-line encryptor exists only to build test fixtures from vendored
+	// wire vectors. Never compiled into release builds (define
+	// NZBGET_TESTING_HOOKS in the test target only).
 	Status EncryptControlLine(
 		const uint8_t* plainData,
 		size_t plainLen,
@@ -153,10 +129,7 @@ public:
 		const uint8_t salt[16],
 		std::vector<uint8_t>& outWireData
 	);
-
-	size_t GetCachedSaltCount() const { return m_cachedSalt.empty() ? 0 : 1; }
-	const std::vector<uint8_t>& GetCachedMasterKey() const { return m_cachedMasterKey; }
-	bool IsSodiumInitFailed() const { return m_sodiumInitFailed; }
+#endif
 
 #ifdef NZBGET_TESTING_HOOKS
 	// Test-only surface: seeds the key cache directly so nonce/tweak vector
@@ -175,6 +148,9 @@ public:
 			m_cachedSalt.assign(16, 0);
 		}
 	}
+
+	size_t GetCachedSaltCount() const { return m_cachedSalt.empty() ? 0 : 1; }
+	const std::vector<uint8_t>& GetCachedMasterKey() const { return m_cachedMasterKey; }
 #endif
 
 private:

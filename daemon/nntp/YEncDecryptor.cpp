@@ -252,119 +252,6 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	return result;
 }
 
-static std::vector<uint8_t> Ff1EncryptNumerals(
-	const uint8_t key[32],
-	const uint8_t* tweak, size_t tweakLen,
-	const std::vector<uint8_t>& numerals,
-	int radix = 253)
-{
-	ScopedEvpCipherCtx aesCtx(EVP_CIPHER_CTX_new());
-	if (!aesCtx)
-	{
-		throw std::bad_alloc();
-	}
-	EVP_EncryptInit_ex(aesCtx.get(), EVP_aes_256_ecb(), nullptr, key, nullptr);
-	EVP_CIPHER_CTX_set_padding(aesCtx.get(), 0);
-
-	ScopedBnCtx bnCtx(BN_CTX_new());
-	if (!bnCtx)
-	{
-		throw std::bad_alloc();
-	}
-	BN_CTX_start(bnCtx.get());
-
-	int n = static_cast<int>(numerals.size());
-	int t = static_cast<int>(tweakLen);
-	int u = n / 2;
-	int v = n - u;
-	int b = static_cast<int>(std::ceil(std::ceil(v * std::log2(static_cast<double>(radix))) / 8.0));
-	int d = 4 * static_cast<int>(std::ceil(b / 4.0)) + 4;
-
-	std::vector<uint8_t> p(16, 0);
-	p[0] = 1; p[1] = 2; p[2] = 1;
-	p[3] = (radix >> 16) & 0xFF;
-	p[4] = (radix >> 8) & 0xFF;
-	p[5] = radix & 0xFF;
-	p[6] = 10;
-	p[7] = u % 256;
-	p[8] = (n >> 24) & 0xFF; p[9] = (n >> 16) & 0xFF; p[10] = (n >> 8) & 0xFF; p[11] = n & 0xFF;
-	p[12] = (t >> 24) & 0xFF; p[13] = (t >> 16) & 0xFF; p[14] = (t >> 8) & 0xFF; p[15] = t & 0xFF;
-
-	int padLen = ((-t - b - 1) % 16 + 16) % 16;
-	std::vector<uint8_t> qPrefix;
-	qPrefix.insert(qPrefix.end(), tweak, tweak + tweakLen);
-	qPrefix.insert(qPrefix.end(), padLen, 0);
-
-	std::vector<uint8_t> A(numerals.begin(), numerals.begin() + u);
-	std::vector<uint8_t> B(numerals.begin() + u, numerals.end());
-
-	BIGNUM* bnNumB = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnNumA = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnY = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnMod = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnRadix = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnC = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnM = BN_CTX_get(bnCtx.get());
-	if (!bnNumB || !bnNumA || !bnY || !bnMod || !bnRadix || !bnC || !bnM)
-	{
-		return {};
-	}
-	BN_set_word(bnRadix, radix);
-
-	for (int i = 0; i < 10; ++i)
-	{
-		NumRadix(B, radix, bnNumB, bnCtx.get());
-		std::vector<uint8_t> numBBytes(b, 0);
-		BN_bn2binpad(bnNumB, numBBytes.data(), b);
-
-		std::vector<uint8_t> q = qPrefix;
-		q.push_back(static_cast<uint8_t>(i));
-		q.insert(q.end(), numBBytes.begin(), numBBytes.end());
-
-		std::vector<uint8_t> pq = p;
-		pq.insert(pq.end(), q.begin(), q.end());
-
-		std::vector<uint8_t> R = CbcMac(aesCtx.get(), pq);
-		std::vector<uint8_t> S = R;
-		uint32_t j = 1;
-		while (S.size() < static_cast<size_t>(d))
-		{
-			uint8_t jBytes[16] = {0};
-			jBytes[12] = (j >> 24) & 0xFF;
-			jBytes[13] = (j >> 16) & 0xFF;
-			jBytes[14] = (j >> 8) & 0xFF;
-			jBytes[15] = j & 0xFF;
-
-			uint8_t blk[16];
-			for (int k = 0; k < 16; ++k) blk[k] = R[k] ^ jBytes[k];
-			uint8_t encBlk[16];
-			AesEcbEncrypt(aesCtx.get(), blk, encBlk);
-			S.insert(S.end(), encBlk, encBlk + 16);
-			j++;
-		}
-
-		BN_bin2bn(S.data(), d, bnY);
-		int m = (i % 2 == 0) ? u : v;
-
-		BN_set_word(bnM, m);
-		BN_exp(bnMod, bnRadix, bnM, bnCtx.get());
-
-		NumRadix(A, radix, bnNumA, bnCtx.get());
-
-		BN_add(bnC, bnNumA, bnY);
-		BN_nnmod(bnC, bnC, bnMod, bnCtx.get());
-
-		std::vector<uint8_t> C = StrRadix(bnC, radix, m, bnCtx.get());
-		A = B;
-		B = C;
-	}
-
-	std::vector<uint8_t> result = A;
-	result.insert(result.end(), B.begin(), B.end());
-
-	return result;
-}
-
 static bool HexToBytes(const char* hex, size_t hexLen, uint8_t* outBytes, size_t outLen)
 {
 	if (hexLen != outLen * 2)
@@ -831,112 +718,9 @@ bool YEncDecryptor::ParseYEncryption(
 		HexToBytesStrict(tagHex.data(), tagHex.size(), outHeader.tag.data(), outHeader.tag.size());
 }
 
-bool YEncDecryptor::ParseYEncryption(
-	const char* line,
-	size_t lineLen,
-	std::string& outCipher,
-	uint8_t outSalt[16],
-	uint8_t outTag[16],
-	uint32_t& outSegmentIndex)
-{
-	YEncryptionHeader header;
-	if (!ParseYEncryption(line, lineLen, header))
-	{
-		return false;
-	}
-	outCipher = header.cipher;
-	memcpy(outSalt, header.salt.data(), 16);
-	memcpy(outTag, header.tag.data(), 16);
-	outSegmentIndex = header.segmentIndex;
-	return true;
-}
-
-bool YEncDecryptor::ParseYEncryption(
-	const char* line,
-	size_t lineLen,
-	std::string& outCipher,
-	uint8_t outSalt[16],
-	uint8_t outTag[16])
-{
-	uint32_t dummyIndex = 0;
-	return ParseYEncryption(line, lineLen, outCipher, outSalt, outTag, dummyIndex);
-}
-
-YEncDecryptor::Status YEncDecryptor::EncryptControlLine(
-	const uint8_t* plainData,
-	size_t plainLen,
-	uint32_t segmentIndex,
-	uint32_t lineIndex,
-	bool isLine1,
-	const uint8_t salt[16],
-	std::vector<uint8_t>& outWireData)
-{
-	outWireData.clear();
-	if (plainLen < 2)
-	{
-		return Status::Error;
-	}
-	if (m_sodiumInitFailed)
-	{
-		return Status::Error;
-	}
-	if (!EnsureMasterKey(salt))
-	{
-		return Status::Error;
-	}
-
-	uint8_t encKey[32];
-	uint8_t tweak[8];
-	if (!DeriveControlKeyAndTweak(segmentIndex, lineIndex, encKey, tweak))
-	{
-		return Status::Error;
-	}
-
-	std::vector<uint8_t> plainNumerals;
-	plainNumerals.reserve(plainLen);
-	try
-	{
-		for (size_t i = 0; i < plainLen; ++i)
-		{
-			plainNumerals.push_back(ByteToNumeral(plainData[i]));
-		}
-		const auto cipherNumerals = Ff1EncryptNumerals(encKey, tweak, 8, plainNumerals, 253);
-		if (cipherNumerals.size() != plainNumerals.size())
-		{
-			outWireData.clear();
-			sodium_memzero(encKey, sizeof(encKey));
-			sodium_memzero(tweak, sizeof(tweak));
-			return Status::Error;
-		}
-		if (isLine1)
-		{
-			outWireData.insert(outWireData.end(), salt, salt + 16);
-			outWireData.push_back(static_cast<uint8_t>((segmentIndex >> 24) & 0xff));
-			outWireData.push_back(static_cast<uint8_t>((segmentIndex >> 16) & 0xff));
-			outWireData.push_back(static_cast<uint8_t>((segmentIndex >> 8) & 0xff));
-			outWireData.push_back(static_cast<uint8_t>(segmentIndex & 0xff));
-		}
-		for (uint8_t numeral : cipherNumerals)
-		{
-			outWireData.push_back(NumeralToByte(numeral));
-		}
-	}
-	catch (...)
-	{
-		outWireData.clear();
-		sodium_memzero(encKey, sizeof(encKey));
-		sodium_memzero(tweak, sizeof(tweak));
-		return Status::Error;
-	}
-	sodium_memzero(encKey, sizeof(encKey));
-	sodium_memzero(tweak, sizeof(tweak));
-	return Status::Ok;
-}
-
 bool YEncDecryptor::RestoreControlLines(
 	const char* wireBlock,
 	size_t wireLen,
-	uint32_t segmentIndex,
 	std::string& outCleanBlock,
 	std::vector<uint8_t>& outLine1Salt,
 	YEncryptionHeader* outHeader)
@@ -995,13 +779,9 @@ bool YEncDecryptor::RestoreControlLines(
 	std::vector<uint8_t> restored;
 	uint32_t line1SegmentIndex = 0;
 	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[0].data), lines[0].len,
-		segmentIndex, 1, true, restored, &outLine1Salt, &line1SegmentIndex) != Status::Ok ||
+		0, 1, true, restored, &outLine1Salt, &line1SegmentIndex) != Status::Ok ||
 		restored.size() < 8 || memcmp(restored.data(), "=ybegin ", 8) != 0 ||
 		line1SegmentIndex == 0)
-	{
-		return false;
-	}
-	if (segmentIndex > 0 && line1SegmentIndex != segmentIndex)
 	{
 		return false;
 	}

@@ -175,29 +175,27 @@ BOOST_AUTO_TEST_CASE(ControlLineDecryptionTest)
 BOOST_AUTO_TEST_CASE(ParseYEncryptionTest)
 {
 	std::string line = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
-	std::string cipher;
-	uint8_t salt[16];
-	uint8_t tag[16];
-	uint32_t segmentIndex = 0;
+	YEncDecryptor::YEncryptionHeader header;
 
-	BOOST_CHECK(YEncDecryptor::ParseYEncryption(line.c_str(), line.length(), cipher, salt, tag, segmentIndex));
-	BOOST_CHECK_EQUAL(cipher, "XChaCha20-Poly1305");
-	BOOST_CHECK_EQUAL(BinToHex(salt, 16), "1a2b3c4d5e6f7890abcdef1234567890");
-	BOOST_CHECK_EQUAL(BinToHex(tag, 16), "0cd77ce245a654463f90b945b1d22d5b");
-	BOOST_CHECK_EQUAL(segmentIndex, 1U);
+	BOOST_CHECK(YEncDecryptor::ParseYEncryption(line.c_str(), line.length(), header));
+	BOOST_CHECK_EQUAL(header.cipher, "XChaCha20-Poly1305");
+	BOOST_CHECK_EQUAL(BinToHex(header.salt.data(), header.salt.size()), "1a2b3c4d5e6f7890abcdef1234567890");
+	BOOST_CHECK_EQUAL(BinToHex(header.tag.data(), header.tag.size()), "0cd77ce245a654463f90b945b1d22d5b");
+	BOOST_CHECK_EQUAL(header.segmentIndex, 1U);
 
 	// Malformed inputs
+	YEncDecryptor::YEncryptionHeader badHeader;
 	std::string badCipher = "=yencryption cipher=AES-256-GCM salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badCipher.c_str(), badCipher.length(), cipher, salt, tag));
+	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badCipher.c_str(), badCipher.length(), badHeader));
 
 	std::string badSalt = "=yencryption cipher=XChaCha20-Poly1305 salt=short index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badSalt.c_str(), badSalt.length(), cipher, salt, tag));
+	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badSalt.c_str(), badSalt.length(), badHeader));
 
 	std::string badTag = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=nonhextag1234567890123456789012\r\n";
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badTag.c_str(), badTag.length(), cipher, salt, tag));
+	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badTag.c_str(), badTag.length(), badHeader));
 
 	std::string badIndex = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000000 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badIndex.c_str(), badIndex.length(), cipher, salt, tag));
+	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badIndex.c_str(), badIndex.length(), badHeader));
 }
 
 BOOST_AUTO_TEST_CASE(DecoderEncryptedIntegrationTest)
@@ -523,7 +521,7 @@ BOOST_AUTO_TEST_CASE(YEncryptionMalformedInputsTest)
 
 		std::string clean;
 		std::vector<uint8_t> outSalt;
-		bool ok = decryptor.RestoreControlLines(block.data(), block.size(), 1, clean, outSalt);
+		bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
 		BOOST_CHECK(!ok);
 		BOOST_CHECK(clean.empty());
 	}
@@ -533,8 +531,8 @@ BOOST_AUTO_TEST_CASE(YEncryptionZeroOutputTest)
 {
 	// Ensure that on every failure condition, zero plaintext is returned and buffer is empty
 	Decoder decoder;
-	decoder.SetPassword("test123");
-	decoder.SetSegmentIndex(1);
+	YEncDecryptor decryptor("test123");
+	decoder.SetDecryptor(&decryptor);
 
 	// 1. Decoder check with no data
 	auto st = decoder.Check();
@@ -543,8 +541,6 @@ BOOST_AUTO_TEST_CASE(YEncryptionZeroOutputTest)
 
 	// 2. Decoder with tampered ciphertext in encrypted wire article
 	decoder.Clear();
-	decoder.SetPassword("test123");
-	decoder.SetSegmentIndex(1);
 
 	std::string password = "test123";
 	std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");

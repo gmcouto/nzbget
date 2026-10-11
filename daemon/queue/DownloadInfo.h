@@ -306,8 +306,8 @@ class NzbParameter
 public:
 	NzbParameter(const char* name, const char* value) :
 		m_name(name), m_value(value) {}
-	const char* GetName() const { return m_name; }
-	const char* GetValue() const { return m_value; }
+	const char* GetName() { return m_name; }
+	const char* GetValue() { return m_value; }
 
 private:
 	CString m_name;
@@ -325,7 +325,6 @@ class NzbParameterList : public NzbParameterListBase
 public:
 	void SetParameter(const char* name, const char* value);
 	NzbParameter* Find(const char* name);
-	const NzbParameter* Find(const char* name) const;
 	void CopyFrom(NzbParameterList* sourceParameters);
 };
 
@@ -619,26 +618,15 @@ public:
 	void SetAddUrlPaused(bool addUrlPaused) { m_addUrlPaused = addUrlPaused; }
 	FileList* GetFileList() { return &m_fileList; }
 	NzbParameterList* GetParameters() { return &m_ppParameters; }
-	const NzbParameterList* GetParameters() const { return &m_ppParameters; }
-	const char* GetParameter(const char* name) const
+	const char* GetPassword()
 	{
-		const NzbParameter* param = m_ppParameters.Find(name);
-		return param ? param->GetValue() : nullptr;
+		NzbParameter* param = m_ppParameters.Find("*Unpack:Password");
+		return (param && param->GetValue() && param->GetValue()[0] != '\0') ? param->GetValue() : "";
 	}
-	bool HasPassword() const
+	bool IsYEncEncrypted()
 	{
-		const char* pwd = GetParameter("*Unpack:Password");
-		return pwd != nullptr && pwd[0] != '\0';
-	}
-	const char* GetPassword() const
-	{
-		const char* pwd = GetParameter("*Unpack:Password");
-		return (pwd && pwd[0] != '\0') ? pwd : "";
-	}
-	bool IsYEncEncrypted() const
-	{
-		const char* enc = GetParameter("*Unpack:YEncEncrypted");
-		return enc != nullptr && !strcasecmp(enc, "yes");
+		NzbParameter* param = m_ppParameters.Find("*Unpack:YEncEncrypted");
+		return param && param->GetValue() && !strcasecmp(param->GetValue(), "yes");
 	}
 	void SetYEncEncrypted(bool encrypted)
 	{

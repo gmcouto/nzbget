@@ -63,7 +63,6 @@ void ArticleWriter::SetWriteBuffer(DiskFile& outFile, int recSize)
 
 void ArticleWriter::Prepare()
 {
-	m_encrypted = false;
 	BuildOutputFilename();
 	m_resultFilename = m_articleInfo->GetResultFilename()
 		? m_articleInfo->GetResultFilename()
@@ -73,9 +72,9 @@ void ArticleWriter::Prepare()
 bool ArticleWriter::IsEncryptedRelease() const
 {
 	// Body Std v1.2 §8: gate on the yEnc-encryption metadata only —
-	// an archive password (HasPassword) does not mean the wire is encrypted.
-	return m_encrypted || (m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		m_fileInfo->GetNzbInfo()->IsYEncEncrypted());
+	// an archive password does not mean the wire is encrypted.
+	return m_fileInfo && m_fileInfo->GetNzbInfo() &&
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
 }
 
 bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 fileSize,
@@ -129,9 +128,8 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 	}
 
 	// allocate cache buffer
-	bool directWriteAllowed = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite());
 	if (g_Options->GetArticleCache() > 0 && !g_Options->GetRawArticle() &&
-		(!directWriteAllowed || m_format == Decoder::efYenc))
+		(!g_Options->GetDirectWrite() || isYEncEncrypted || m_format == Decoder::efYenc))
 	{
 		m_articleData = g_ArticleCache->Alloc(m_articleSize);
 
@@ -154,7 +152,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			return true;
 		}
 
-		bool directWrite = directWriteAllowed && m_format == Decoder::efYenc;
+		bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
 		const char* outFilename = directWrite ? m_outputFilename.c_str() : m_tempFilename.c_str();
 		if (!m_outFile.Open(outFilename, directWrite ? DiskFile::omReadWrite : DiskFile::omWrite))
 		{
@@ -186,9 +184,7 @@ bool ArticleWriter::GetSkipDiskWrite()
 
 bool ArticleWriter::Write(char* buffer, int len)
 {
-	bool isYEncEncrypted = m_encrypted || (m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		m_fileInfo->GetNzbInfo()->IsYEncEncrypted());
-	if (isYEncEncrypted)
+	if (IsEncryptedRelease())
 	{
 		// Enforce Zero-Output Guarantee: never write unauthenticated ciphertext to disk or cache
 		return true;
@@ -245,10 +241,6 @@ bool ArticleWriter::CommitAuthenticatedData(const uint8_t* data, size_t length, 
 
 	if (m_outFile.Active())
 	{
-		if (length == 0)
-		{
-			return true;
-		}
 		return m_outFile.Write(data, length) > 0;
 	}
 
@@ -278,7 +270,6 @@ void ArticleWriter::Finish(bool success)
 			FileSystem::DeleteFile(m_tempFilename.c_str());
 			FileSystem::DeleteFile(m_resultFilename.c_str());
 		}
-		m_articleData = CachedSegmentData();
 		return;
 	}
 

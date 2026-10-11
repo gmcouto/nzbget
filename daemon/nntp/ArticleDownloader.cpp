@@ -372,18 +372,12 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 			m_decryptor = std::make_unique<YEncDecryptor>(pwd);
 		}
 		m_decoder.SetDecryptor(m_decryptor.get());
-		// Body Std v1.2 §8: no expected index exists pre-fetch —
-		// the decryptor extracts the authoritative index from the wire Line 1
-		// bootstrap. It is consumed post-auth-success in DecodeCheck().
-		m_decoder.SetSegmentIndex(0);
 	}
 	else
 	{
 		m_decoder.SetDecryptor(nullptr);
-		m_decoder.SetSegmentIndex(0);
 	}
 
-	m_authFailed = false;
 	status = adRunning;
 	CharBuffer lineBuf(g_Options->GetArticleReadChunkSize());
 
@@ -524,10 +518,6 @@ bool ArticleDownloader::Write(char* buffer, int len)
 			}
 		}
 
-		m_articleWriter.SetEncrypted(m_decoder.IsEncrypted() ||
-			(m_fileInfo && m_fileInfo->GetNzbInfo() && m_fileInfo->GetNzbInfo()->IsYEncEncrypted()));
-			// Body Std v1.2 §8: IsYEncEncrypted() only — archive password alone
-			// must not stage ciphertext semantics.
 		if (!m_articleWriter.Start(m_decoder.GetFormat(), articleFilename, articleFileSize, articleOffset, articleSize))
 		{
 			return false;
@@ -594,7 +584,6 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				int64 articleOffset = m_decoder.GetBeginPos() > 0 ? m_decoder.GetBeginPos() - 1 : 0;
 				int articleSize = static_cast<int>(m_decoder.GetDecryptedData().size());
 
-				m_articleWriter.SetEncrypted(true);
 				if (!m_articleWriter.Start(m_decoder.GetFormat(), m_decoder.GetArticleFilename(),
 					articleFileSize, articleOffset, articleSize))
 				{
@@ -615,7 +604,6 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 		}
 		else if (status == Decoder::dsAuthFailed)
 		{
-			m_authFailed = true;
 			if (m_writingStarted)
 			{
 				m_articleWriter.DiscardStagedData();

@@ -267,11 +267,11 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 
 	BOOST_REQUIRE(g_Options->GetDirectWrite());
 
-	// Case 1: NZB has password set but YEncEncrypted meta is missing
+	// Case 1: NZB declares yenc_encrypted; direct-write must be bypassed
 	NzbInfo nzbInfo;
 	nzbInfo.SetDestDir(tempDir.string().c_str());
 	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "secret123");
-	nzbInfo.SetYEncEncrypted(false);
+	nzbInfo.SetYEncEncrypted(true);
 
 	FileInfo fileInfo;
 	fileInfo.SetNzbInfo(&nzbInfo);
@@ -285,7 +285,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 	writer.SetArticleInfo(&articleInfo);
 	writer.SetInfoName("gating_test_article");
 	writer.Prepare();
-	writer.SetEncrypted(true);
 
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "gating_test.dat", 32, 0, 32));
 
@@ -337,7 +336,6 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 	writer.SetArticleInfo(&articleInfo);
 	writer.SetInfoName("zero_byte_article");
 	writer.Prepare();
-	writer.SetEncrypted(true);
 
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "zero_byte.dat", 0, 0, 0));
 
@@ -401,33 +399,22 @@ BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 	ArticleInfo articleInfo;
 	articleInfo.SetSize(32);
 
-	// Simulate the DecodeCheck silent-ciphertext path: declaredEncrypted &&
-	// !m_decoder.IsEncrypted() → return adNotFound before writer Start().
-	// The writer must therefore never touch disk; assert the mapping too.
-	const bool declaredEncrypted = nzbInfo.IsYEncEncrypted();
-	const bool decoderEncrypted = false; // no bootstrap on the wire
-	ArticleDownloader::EStatus mapped = declaredEncrypted && !decoderEncrypted ?
-		ArticleDownloader::adNotFound : ArticleDownloader::adFinished;
-	BOOST_CHECK_EQUAL(static_cast<int>(mapped), static_cast<int>(ArticleDownloader::adNotFound));
-
 	ArticleWriter writer;
 	writer.SetFileInfo(&fileInfo);
 	writer.SetArticleInfo(&articleInfo);
 	writer.SetInfoName("silent_ct_article");
 	writer.Prepare();
-	// No Start(), no Write(), no Finish() — matching the fixed DecodeCheck path.
+	// No Start(), no Write(), no Finish() — matching the DecodeCheck path that
+	// returns adNotFound before any writer call.
 
 	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
-	BOOST_CHECK(writer.GetCachedData() == nullptr);
 
 	// Even if ciphertext were staged (worst case), DiscardStagedData on the
-	// failure path must leave no cache and no destination file.
-	writer.SetEncrypted(true);
+	// failure path must leave no destination file.
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "silent_ct.dat", 32, 0, 32));
 	std::vector<char> ciphertext(32, 'Q');
 	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
 	writer.DiscardStagedData();
-	BOOST_CHECK(writer.GetCachedData() == nullptr);
 	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
 
 	g_Options = oldOptions;

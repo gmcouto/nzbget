@@ -1193,4 +1193,184 @@ BOOST_AUTO_TEST_CASE(RapidYencDecodeExNonRawEquivalenceTest)
 	BOOST_CHECK_EQUAL(std::string(dest1.data(), written1), payload);
 }
 
+namespace
+{
+
+// Body-vec-01 key/nonce (password test123, salt 1a2b...7890, segment index 1).
+const char* const BODY_VEC01_KEY = "5dd5a3371f80a50eb96feb11787dd4567a09b55655aa3c2b1596bf2d45c9a6d7";
+const char* const BODY_VEC01_NONCE = "f6f6e23118719f87d11c9984c71de61cb38c8e50e1356242";
+const char* const SINGLE_PART_SALT = "1a2b3c4d5e6f7890abcdef1234567890";
+
+// Body Std v1.2 section 2.1 AAD for a single-part article (part 1, begin 1, 16 segment bytes).
+std::vector<uint8_t> SinglePartAad(const std::string& name)
+{
+	std::vector<uint8_t> aad = HexToBin("79656e632d626f647920616164" "00000001" "00000001" "0000000000000010");
+	const uint32_t nameLen = static_cast<uint32_t>(name.size());
+	aad.push_back(static_cast<uint8_t>(nameLen >> 24));
+	aad.push_back(static_cast<uint8_t>(nameLen >> 16));
+	aad.push_back(static_cast<uint8_t>(nameLen >> 8));
+	aad.push_back(static_cast<uint8_t>(nameLen));
+	aad.insert(aad.end(), name.begin(), name.end());
+	return aad;
+}
+
+// Builds a complete encrypted single-part article (16-byte plaintext) with the given =ybegin name.
+std::string BuildEncryptedSinglePartWire(const std::string& name, const std::vector<uint8_t>& plaintext)
+{
+	const std::vector<uint8_t> salt = HexToBin(SINGLE_PART_SALT);
+	const std::vector<uint8_t> key = HexToBin(BODY_VEC01_KEY);
+	const std::vector<uint8_t> nonce = HexToBin(BODY_VEC01_NONCE);
+	const std::vector<uint8_t> aad = SinglePartAad(name);
+
+	std::vector<uint8_t> ct(plaintext.size());
+	std::vector<uint8_t> tag(crypto_aead_xchacha20poly1305_ietf_ABYTES);
+	crypto_aead_xchacha20poly1305_ietf_encrypt_detached(ct.data(), tag.data(), nullptr,
+		plaintext.data(), plaintext.size(), aad.data(), aad.size(), nullptr, nonce.data(), key.data());
+
+	YEncDecryptor encDec("test123");
+	std::string line1 = "=ybegin line=128 size=16 name=" + name;
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1.data()), line1.size(), 1, 1, true, salt.data(), wireLine1)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2 = std::string("=yencryption cipher=XChaCha20-Poly1305 salt=") + SINGLE_PART_SALT +
+		" index=00000001 tag=" + BinToHex(tag);
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2.data()), line2.size(), 1, 2, false, salt.data(), wireLine2)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	Crc32 crc;
+	crc.Append(ct.data(), ct.size());
+	const uint32_t ctCrc = crc.Finish();
+	std::ostringstream endOss;
+	endOss << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << ctCrc;
+	std::string line4 = endOss.str();
+	std::vector<uint8_t> wireLine4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4.data()), line4.size(), 1, 4, false, salt.data(), wireLine4)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wire;
+	wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size()).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size()).append("\r\n");
+	wire.append(yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()))).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size()).append("\r\n.\r\n");
+	return wire;
+}
+
+} // namespace
+
+// Body Std v1.2 section 2.1 / Control Std v1.2 section 5: an encrypted single-part article whose
+// =ybegin name contains " part=" is single-part. The AAD must use part 1 and begin 1.
+BOOST_AUTO_TEST_CASE(EncryptedSinglePartNameContainsPartTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	const std::string wire = BuildEncryptedSinglePartWire("my part=2.bin", expectedPlaintext);
+
+	YEncDecryptor encDec("test123");
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+	decoder.SetCrcCheck(true);
+	std::string msg = wire;
+	decoder.DecodeBuffer(msg.data(), static_cast<int>(msg.size()));
+
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFinished));
+	BOOST_CHECK_EQUAL(std::string(decoder.GetArticleFilename()), "my part=2.bin");
+	BOOST_CHECK(decoder.IsEncrypted());
+	BOOST_CHECK_EQUAL(decoder.GetPartNumber(), 1);
+	BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+		expectedPlaintext.begin(), expectedPlaintext.end());
+}
+
+// Control Std v1.2 section 3/5: name= runs to end of line, so "=ypart " and " begin=" inside an encrypted
+// name are file name text. The AAD must keep part 1 and begin 1 (not begin=5 from the name).
+BOOST_AUTO_TEST_CASE(EncryptedSinglePartNameContainsYpartBeginTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	const std::string wire = BuildEncryptedSinglePartWire("a =ypart x begin=5.bin", expectedPlaintext);
+
+	YEncDecryptor encDec("test123");
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+	decoder.SetCrcCheck(true);
+	std::string msg = wire;
+	decoder.DecodeBuffer(msg.data(), static_cast<int>(msg.size()));
+
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFinished));
+	BOOST_CHECK_EQUAL(std::string(decoder.GetArticleFilename()), "a =ypart x begin=5.bin");
+	BOOST_CHECK(decoder.IsEncrypted());
+	BOOST_CHECK_EQUAL(decoder.GetPartNumber(), 1);
+	BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+		expectedPlaintext.begin(), expectedPlaintext.end());
+}
+
+// An unencrypted article with the same name keeps the upstream strstr(" part=") decoding.
+BOOST_AUTO_TEST_CASE(PlainSinglePartNameContainsPartUnchangedTest)
+{
+	const std::string payload = "Hello";
+	const std::string encoded = yEncEncode(payload);
+	std::vector<uint8_t> payloadBytes(payload.begin(), payload.end());
+	Crc32 crc;
+	crc.Append(payloadBytes.data(), payloadBytes.size());
+	std::ostringstream endOss;
+	endOss << "=yend size=5 crc32=" << std::hex << std::setw(8) << std::setfill('0') << crc.Finish();
+	const std::string wire = "=ybegin line=128 size=5 name=my part=2.bin\r\n" + encoded + "\r\n" + endOss.str() +
+		"\r\n.\r\n";
+
+	Decoder decoder;
+	std::string msg = wire;
+	const int len = decoder.DecodeBuffer(msg.data(), static_cast<int>(msg.size()));
+	// Upstream plain yEnc: strstr(" part=") also matches inside name=, so the article is treated as a
+	// multipart part (part 2) without =ypart and rejected as invalid size. Output stays empty.
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsInvalidSize));
+	BOOST_CHECK_EQUAL(decoder.GetPartNumber(), 2);
+	BOOST_CHECK_EQUAL(decoder.GetSize(), 5);
+	BOOST_CHECK_EQUAL(len, 0);
+	BOOST_CHECK(!decoder.IsEncrypted());
+}
+
+// Control Std v1.2 section 5: without name=, multipart is decided by the presence of part= alone.
+// Line 1 is encrypted with segment index 1; the body line is passed through verbatim.
+BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
+{
+	YEncDecryptor encDec("test123");
+	const std::vector<uint8_t> salt = HexToBin(SINGLE_PART_SALT);
+	auto encrypt = [&](const std::string& text, uint32_t lineIndex, bool line1)
+	{
+		std::vector<uint8_t> out;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(text.data()), text.size(), 1, lineIndex, line1, salt.data(), out)),
+			static_cast<int>(YEncDecryptor::Status::Ok));
+		return std::string(out.begin(), out.end());
+	};
+	const std::string header = std::string("=yencryption cipher=XChaCha20-Poly1305 salt=") + SINGLE_PART_SALT +
+		" index=00000001 tag=00000000000000000000000000000000";
+
+	// Single-part, no name= and no part=: four lines, no =ypart.
+	{
+		const std::string wire = encrypt("=ybegin line=128 size=16", 1, true) + "\r\n" +
+			encrypt(header, 2, false) + "\r\n" + "F\r\n" + encrypt("=yend size=16 crc32=00000000", 4, false) + "\r\n";
+		YEncDecryptor::YEncryptionHeader parsed;
+		std::string clean;
+		std::vector<uint8_t> outSalt;
+		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt, &parsed));
+		BOOST_CHECK_EQUAL(clean, "=ybegin line=128 size=16\r\nF\r\n=yend size=16 crc32=00000000\r\n");
+		BOOST_CHECK_EQUAL(parsed.segmentIndex, 1u);
+	}
+
+	// Multipart by part= alone (no name=): five lines, =ypart at line 2.
+	{
+		const std::string wire = encrypt("=ybegin part=1 total=1 line=128 size=16", 1, true) + "\r\n" +
+			encrypt("=ypart begin=1 end=16", 2, false) + "\r\n" + encrypt(header, 3, false) + "\r\n" + "F\r\n" +
+			encrypt("=yend size=16 crc32=00000000", 5, false) + "\r\n";
+		std::string clean;
+		std::vector<uint8_t> outSalt;
+		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt));
+		BOOST_CHECK(clean.find("=ypart begin=1 end=16\r\n") != std::string::npos);
+		BOOST_CHECK(clean.find("=yencryption") == std::string::npos);
+	}
+}
+
 BOOST_AUTO_TEST_SUITE_END()

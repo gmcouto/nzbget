@@ -706,7 +706,12 @@ bool YEncDecryptor::RestoreControlLines(
 
 	const std::string begin(restored.begin(), restored.end());
 	outCleanBlock.append(begin).append(lines[0].ending);
-	const bool multipart = begin.find(" part=") != std::string::npos;
+	// Body Std v1.2 section 2.1 / Control Std v1.2 section 5: multipart is decided only by keywords
+	// before name=. name= is the last =ybegin keyword and its value runs to end of line, so a
+	// single-part article named "my part=2.bin" is not multipart.
+	const size_t nameIndex = begin.find(" name=");
+	const size_t partIndex = begin.find(" part=");
+	const bool multipart = partIndex != std::string::npos && (nameIndex == std::string::npos || partIndex < nameIndex);
 	const size_t headerIndex = multipart ? 2 : 1;
 	if (multipart)
 	{

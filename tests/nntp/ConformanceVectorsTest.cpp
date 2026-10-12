@@ -281,7 +281,7 @@ BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
 {
 	const auto fixture = LoadFixture("control_line_encryption.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 11);
+	BOOST_REQUIRE_EQUAL(vectors.size(), 12);
 
 	for (const auto& item : vectors)
 	{
@@ -347,6 +347,45 @@ BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
 			}
 		}
 	}
+}
+
+// control-vec-12 (Control Std v1.2 section 5 step 4, Body Std v1.2 section 2.1): a single-part
+// article whose =ybegin name contains " part=" is single-part. Only keywords before name= count,
+// so the restored block has no =ypart and the first data line is line 3. Runs the real restore path.
+BOOST_AUTO_TEST_CASE(ControlVec12SinglePartNameContainsPartRestoreTest)
+{
+	const auto fixture = LoadFixture("control_line_encryption.json");
+	const boost::json::object* found = nullptr;
+	for (const auto& item : fixture.at("vectors").as_array())
+	{
+		if (JsonString(item.as_object(), "id") == "control-vec-12-single-part-name-contains-part")
+		{
+			found = &item.as_object();
+		}
+	}
+	BOOST_REQUIRE(found != nullptr);
+	const auto& vector = *found;
+	BOOST_REQUIRE_EQUAL(vector.at("expected_multipart").as_bool(), false);
+	BOOST_REQUIRE_EQUAL(JsonUint32(vector, "expected_first_data_line"), 3U);
+
+	std::string wire;
+	for (const auto& line : vector.at("expected_wire_lines_hex").as_array())
+	{
+		const auto bytes = HexToBin(boost::json::value_to<std::string>(line));
+		wire.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+		wire.append("\r\n");
+	}
+
+	YEncDecryptor decryptor(JsonString(vector, "password"));
+	std::string cleanBlock;
+	std::vector<uint8_t> salt;
+	YEncDecryptor::YEncryptionHeader header;
+	BOOST_REQUIRE(decryptor.RestoreControlLines(wire.data(), wire.size(), cleanBlock, salt, &header));
+	BOOST_CHECK_EQUAL(BinToHex(salt), JsonString(vector, "salt_hex"));
+	BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
+	BOOST_CHECK_EQUAL(cleanBlock,
+		"=ybegin line=128 size=1 name=my part=2.bin\r\nF\r\n=yend size=1 crc32=16df26f1\r\n");
+	BOOST_CHECK(cleanBlock.find("=ypart") == std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)

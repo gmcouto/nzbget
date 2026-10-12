@@ -406,7 +406,10 @@ void Decoder::ParseName(const char* buffer, const char* bufferEnd)
 	const char* pe = pb;
 	while (pe < bufferEnd && *pe != '\0' && *pe != '\n' && *pe != '\r')
 	{
-		if (pe + 7 <= bufferEnd && strncmp(pe, "=ypart ", 7) == 0)
+		// Encrypted wire mode: name= is the last =ybegin keyword and its value runs to end of line
+		// (Control Std v1.2 section 3 and 5), so "=ypart " inside it is file name text, not a part marker.
+		// Plain yEnc keeps the upstream scan for "=ypart ".
+		if (!m_encryptedWireMode && pe + 7 <= bufferEnd && strncmp(pe, "=ypart ", 7) == 0)
 		{
 			ParseYpart(pe);
 			break;
@@ -468,6 +471,14 @@ void Decoder::ProcessYenc(char* buffer, int len)
 		char* partPtr = strstr(buffer, " part=");
 		// Ensure marker is within the current buffer's length
 		if (partPtr && partPtr >= buffer + len) partPtr = nullptr;
+		// Encrypted wire mode (Body Std v1.2 section 2.1, Control Std v1.2 section 5): only keywords
+		// before name= decide multipart; a " part=" inside the name value is not a part marker.
+		// Plain yEnc keeps the upstream match above.
+		if (partPtr && m_encryptedWireMode)
+		{
+			const char* namePtr = strstr(buffer, " name=");
+			if (namePtr && namePtr < partPtr) partPtr = nullptr;
+		}
 		m_part = partPtr != nullptr;
 
 		if (m_part && partPtr)

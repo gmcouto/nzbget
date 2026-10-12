@@ -667,6 +667,23 @@ bool Scanner::AddFileToQueue(
 
 	nzbInfo->GetParameters()->CopyFrom(parameters);
 
+	// If this release is encrypted, ensure an effective password exists
+	// after merging parameters. If parameters provided *Unpack:Password (e.g. from
+	// an API/scan caller) or category script parameters, that password must satisfy
+	// the encrypted release requirement. Conversely, if no effective password
+	// exists from ANY source, fail before adding to the queue.
+	if (nzbInfo->IsYEncEncrypted())
+	{
+		const char* effectivePwd = nzbInfo->GetPassword();
+		if (!effectivePwd || effectivePwd[0] == '\0')
+		{
+			ok = false;
+			error("Could not add collection %s to queue: METADATA_VALIDATION: yenc_encrypted release has no password", basename);
+			nzbInfo->AddMessage(Message::mkError, BString<1024>(
+				"Error parsing nzb-file %s: METADATA_VALIDATION: yenc_encrypted release has no password", basename));
+		}
+	}
+
 	for (FileInfo* fileInfo : nzbInfo->GetFileList())
 	{
 		fileInfo->SetPaused(addPaused);

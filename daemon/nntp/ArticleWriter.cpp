@@ -131,6 +131,9 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 	if (g_Options->GetArticleCache() > 0 && !g_Options->GetRawArticle() &&
 		(!g_Options->GetDirectWrite() || isYEncEncrypted || m_format == Decoder::efYenc))
 	{
+		// Encrypted releases must not bypass the cache with direct writes: the
+		// final-file commitment happens only after authentication in
+		// CommitAuthenticatedData, so encrypted articles always stage here.
 		m_articleData = g_ArticleCache->Alloc(m_articleSize);
 
 		while (!m_articleData.GetData() && g_ArticleCache->GetFlushing())
@@ -1157,7 +1160,7 @@ bool ArticleCache::CheckFlush(bool flushEverything)
 
 			for (FileInfo* fileInfo : nzbInfo->GetFileList())
 			{
-				if (fileInfo->GetCachedArticles() > 0 
+				if (fileInfo->GetCachedArticles() > 0
 					&& (fileInfo->GetActiveDownloads() == 0 || flushEverything)
 					&& (!fileInfo->GetNzbInfo()->GetSkipDiskWrite() || flushEverything))
 				{

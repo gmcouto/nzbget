@@ -13,7 +13,7 @@ ARG CMAKE_BUILD_TYPE=Release
 #install build packages
 RUN \
   echo "**** install build packages ****" && \
-  apk add --no-cache g++ gcc git libxml2-dev libxslt-dev make ncurses-dev openssl-dev boost-dev curl cmake
+  apk add --no-cache g++ gcc git libxml2-dev libxslt-dev make ncurses-dev openssl-dev boost-dev curl cmake libsodium-dev argon2-dev
 
 #install archive packages
 RUN \
@@ -98,7 +98,7 @@ COPY --from=build /usr/bin/7z /usr/bin/7z
 COPY --from=build /app/nzbget/ /app/nzbget/
 RUN \
   echo "**** install packages ****" && \
-  apk add --no-cache --update shadow su-exec libxml2 libxslt openssl python3 boost1.84-json boost1.84-filesystem tzdata && \
+  apk add --no-cache --update shadow su-exec libxml2 libxslt openssl python3 boost1.84-json boost1.84-filesystem tzdata libsodium argon2-libs && \
   ln -sf /usr/bin/python3 /usr/bin/python && \
   ln -s /usr/bin/7z /app/nzbget/7za && \
   ln -s /usr/bin/unrar /app/nzbget/unrar && \

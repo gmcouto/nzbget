@@ -24,40 +24,13 @@
 #include "Log.h"
 #include "Util.h"
 #include "YEncDecryptor.h"
+#include <rapidyenc.h>
 
-// rapidyenc internals: DecodeYenc needs the non-raw (no NNTP dot-unstuffing)
-// decoder for restored encrypted blocks. rapidyenc only exposes its
-// incremental "end-aware" decoder with dot-unstuffing hardwired (isRaw=true);
-// the non-raw variant is reachable only via the internal _do_decode function
-// pointer (extern-declared here, defined in rapidyenc's src/decoder.cc).
-//
-// These internals are pinned-tag-specific; see cmake/rapidyenc.cmake and the
-// static_assert below. The non-raw kernel consumed here has no incremental
-// early-exit semantics: it consumes the entire len input.
-namespace RapidYenc
-{
-	typedef int YencDecoderState;
-	extern int (*_do_decode)(const unsigned char**, unsigned char**, size_t, int*);
-	extern int (*_do_decode_raw)(const unsigned char**, unsigned char**, size_t, int*);
-	extern int _decode_isa;
-}
-
-// Compile-time guard for the rapidyenc internals reach above (cmake/rapidyenc.cmake
-// documents the pinned tag). If rapidyenc is bumped past a version whose internal
-// decoder kernel layout changed, fail the build here instead of silently corrupting
-// encrypted blocks; re-validate the extern block against rapidyenc's src/decoder.cc.
-static_assert(RAPIDYENC_VERSION == 0x010101,
-	"Decoder.cpp externs rapidyenc internals (_do_decode/_do_decode_raw) that are "
-	"only validated for rapidyenc v1.1.1 (0x010101); re-validate them before bumping");
-
-// Non-raw yEnc decode: returns bytes written to dest. Consumes the entire
-// len input (the non-raw decoder has no incremental early-exit semantics).
+// Non-raw yEnc decode: uses supported rapidyenc_decode_ex(is_raw=0)
+// for restored encrypted blocks (which have already been dot-unstuffed).
 static size_t RapidYencDecodeNoUnstuffing(const void* src, void* dest, size_t len, int* state)
 {
-	unsigned char* ds = (unsigned char*)dest;
-	RapidYenc::_do_decode(
-		(const unsigned char**)&src, &ds, len, state);
-	return ds - (unsigned char*)dest;
+	return rapidyenc_decode_ex(0, src, dest, len, reinterpret_cast<RapidYencDecoderState*>(state));
 }
 
 Decoder::Decoder()
@@ -71,6 +44,8 @@ void Decoder::Clear()
 {
 	m_format = efUnknown;
 	m_articleFilename.clear();
+	m_rawArticleFilename.clear();
+	m_partNumber = 1;
 	m_body = false;
 	m_begin = false;
 	m_part = false;
@@ -145,7 +120,10 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 	// Check if candidate for encrypted wire mode
 	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty())))
 	{
-		if (m_encryptedWireMode && m_wireBuffer.size() + static_cast<size_t>(len) > kMaxWireBufferSize)
+		// Bound line-1/wire staging to 16 MiB regardless of mode: a
+		// newline-free or oversized stream must fail closed instead of
+		// growing the buffer without limit.
+		if (m_wireBuffer.size() + static_cast<size_t>(len) > kMaxWireBufferSize)
 		{
 			m_authFailed = true;
 			m_wireBuffer.clear();
@@ -169,89 +147,71 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				}
 				std::string line1 = m_wireBuffer.substr(0, line1End);
 
-				if (line1.rfind("=ybegin ", 0) == 0 || line1.rfind("begin ", 0) == 0)
+				// Combined-only reception (Body Std v1.2 §5, Control Std v1.2 §5 step 4):
+				// an encrypted job whose Line 1 arrives as plaintext =ybegin/uue "begin"
+				// is an unexpected fetched mode (body-only/unencrypted framing) —
+				// provider corruption, never released as output.
+				std::string candidateLine1 = line1;
+				if (!candidateLine1.empty() && candidateLine1[0] == '.')
 				{
-					m_encryptedWireMode = false;
+					candidateLine1.erase(0, 1);
+				}
+				std::vector<uint8_t> ptLine1;
+				std::vector<uint8_t> salt1;
+				uint32_t extractedIndex = 0;
+				auto st = m_decryptor->DecryptControlLine(
+					reinterpret_cast<const uint8_t*>(candidateLine1.data()),
+					candidateLine1.size(),
+					0,
+					1,
+					true,
+					ptLine1,
+					&salt1,
+					&extractedIndex
+				);
+				if (st == YEncDecryptor::Status::Ok && ptLine1.size() >= 8 && memcmp(ptLine1.data(), "=ybegin ", 8) == 0)
+				{
+					m_encryptedWireMode = true;
+					m_format = efYenc;
+					m_segmentIndex = extractedIndex;
+					int wireLen = static_cast<int>(m_wireBuffer.size());
+					UnstuffInPlace(m_wireBuffer.data(), wireLen);
+					m_wireBuffer.resize(wireLen);
 				}
 				else
 				{
-					std::string candidateLine1 = line1;
-					if (!candidateLine1.empty() && candidateLine1[0] == '.')
-					{
-						candidateLine1.erase(0, 1);
-					}
-					std::vector<uint8_t> ptLine1;
-					std::vector<uint8_t> salt1;
-					uint32_t extractedIndex = 0;
-					auto st = m_decryptor->DecryptControlLine(
-						reinterpret_cast<const uint8_t*>(candidateLine1.data()),
-						candidateLine1.size(),
-						0,
-						1,
-						true,
-						ptLine1,
-						&salt1,
-						&extractedIndex
-					);
-					if (st == YEncDecryptor::Status::Ok && ptLine1.size() >= 8 && memcmp(ptLine1.data(), "=ybegin ", 8) == 0)
-					{
-						m_encryptedWireMode = true;
-						m_format = efYenc;
-						m_segmentIndex = extractedIndex;
-						int wireLen = static_cast<int>(m_wireBuffer.size());
-						UnstuffInPlace(m_wireBuffer.data(), wireLen);
-						m_wireBuffer.resize(wireLen);
-					}
-					else
-					{
-						m_authFailed = true;
-						m_wireBuffer.clear();
-						m_wireProcessed = true;
-						m_eof = true;
-						return 0;
-					}
-				}
-
-				if (!m_encryptedWireMode)
-				{
-					m_lineBuf.Append(m_wireBuffer.data(), static_cast<int>(m_wireBuffer.size()));
+					m_authFailed = true;
 					m_wireBuffer.clear();
-					alreadyBuffered = true;
+					m_wireProcessed = true;
+					m_eof = true;
+					return 0;
 				}
 			}
-			else if (m_wireBuffer.size() > 8192)
+
+			if (m_encryptedWireMode)
 			{
-				// Bound line 1 staging to 8KB
-				m_encryptedWireMode = false;
-				m_lineBuf.Append(m_wireBuffer.data(), static_cast<int>(m_wireBuffer.size()));
-				m_wireBuffer.clear();
-				alreadyBuffered = true;
+				bool complete =
+					// Whole-buffer terminator (".\r\n" or ".\n")
+					m_wireBuffer == ".\r\n" || m_wireBuffer == ".\n" ||
+					// Suffix terminator check per NNTP wire framing
+					m_wireBuffer.ends_with("\r\n.\r\n") ||
+					m_wireBuffer.ends_with("\n.\n") ||
+					m_wireBuffer.ends_with("\n.\r\n");
+
+				if (complete)
+				{
+					ProcessRestoredBlock(m_wireBuffer);
+					m_wireProcessed = true;
+					m_eof = true;
+				}
+
+				return 0;
 			}
 			else
 			{
 				// Line 1 is still being accumulated in m_wireBuffer
 				return 0;
 			}
-		}
-
-		if (m_encryptedWireMode)
-		{
-			bool complete =
-				// Whole-buffer terminator (".\r\n" or ".\n")
-				m_wireBuffer == ".\r\n" || m_wireBuffer == ".\n" ||
-				// Suffix terminator check per NNTP wire framing
-				m_wireBuffer.ends_with("\r\n.\r\n") ||
-				m_wireBuffer.ends_with("\n.\n") ||
-				m_wireBuffer.ends_with("\n.\r\n");
-
-			if (complete)
-			{
-				ProcessRestoredBlock(m_wireBuffer);
-				m_wireProcessed = true;
-				m_eof = true;
-			}
-
-			return 0;
 		}
 	}
 
@@ -454,6 +414,7 @@ void Decoder::ParseName(const char* buffer, const char* bufferEnd)
 		++pe;
 	}
 
+	m_rawArticleFilename = std::string(pb, pe - pb);
 	m_articleFilename = WebUtil::Latin1ToUtf8(CString(pb, (int)(pe - pb)));
 }
 
@@ -503,11 +464,20 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			pb += 6;
 			m_size = static_cast<int64>(atoll(pb));
 		}
-		
+
 		char* partPtr = strstr(buffer, " part=");
 		// Ensure marker is within the current buffer's length
 		if (partPtr && partPtr >= buffer + len) partPtr = nullptr;
 		m_part = partPtr != nullptr;
+
+		if (m_part && partPtr)
+		{
+			m_partNumber = atoi(partPtr + 6);
+		}
+		else
+		{
+			m_partNumber = 1;
+		}
 
 		if (!m_part)
 		{
@@ -540,7 +510,7 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			pb += crcOffset;
 			m_expectedCRC = static_cast<uint32>(strtoul(pb, nullptr, 16));
 		}
-		
+
 		pb = strstr(buffer, " size=");
 		if (pb && pb + 6 < buffer + len)
 		{
@@ -548,8 +518,11 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			m_endSize = atoll(pb);
 		}
 	}
-	// 4. Check =yencryption (Prefix length 13)
-	else if (len >= 13 && !strncmp(buffer, "=yencryption ", 13))
+	// 4. Check =yencryption (Prefix length 13).
+	// Combined-only reception: =yencryption is only valid in restored encrypted wire blocks.
+	// In ordinary (non-wire) articles, an unknown control line starting with =y
+	// is ignored, preserving upstream behavior without provenance.
+	else if (m_encryptedWireMode && len >= 13 && !strncmp(buffer, "=yencryption ", 13))
 	{
 		ParseEncryption(buffer, len);
 	}
@@ -636,7 +609,7 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 			m_body = false;
 		}
 
-		if (m_crcCheck && bytesWritten > 0)
+		if ((m_crcCheck || m_encrypted) && bytesWritten > 0)
 		{
 			m_crc32.Append(reinterpret_cast<unsigned char*>(outbuf), bytesWritten);
 		}
@@ -661,7 +634,7 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	//   0: no end sequence found
 	//   1: \r\n=y sequence found, src points to byte after 'y'
 	//   2: \r\n.\r\n sequence found, src points to byte after last '\n'
-	if (endseq != 0) 
+	if (endseq != 0)
 	{
 		// switch back to line mode to process '=yend'- or eof- marker
 		m_lineBuf.SetLength(0);
@@ -681,13 +654,6 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	}
 
 	m_outSize += bytesWritten;
-
-	if (m_encrypted)
-	{
-		m_cipherPayload.insert(m_cipherPayload.end(),
-			reinterpret_cast<const uint8_t*>(outbuf),
-			reinterpret_cast<const uint8_t*>(outbuf) + bytesWritten);
-	}
 
 	return bytesWritten;
 }
@@ -766,7 +732,7 @@ Decoder::EStatus Decoder::Check()
 	{
 		case efYenc:
 			return CheckYenc();
-			 
+
 		case efUx:
 			return CheckUx();
 
@@ -801,8 +767,17 @@ Decoder::EStatus Decoder::CheckYenc()
 	{
 		return dsInvalidSize;
 	}
-	else if (m_crcCheck && m_crc && (m_expectedCRC != m_calculatedCRC))
+	else if ((m_crcCheck || m_encrypted) && m_crc && (m_expectedCRC != m_calculatedCRC))
 	{
+		if (m_encrypted)
+		{
+			// Force encrypted ciphertext CRC verification before AEAD.
+			// Wire CRC mismatch fails authentication (provider corruption tier)
+			// with zero plaintext output.
+			m_authFailed = true;
+			m_decryptedPlaintext.clear();
+			return dsAuthFailed;
+		}
 		return dsCrcError;
 	}
 
@@ -815,10 +790,30 @@ Decoder::EStatus Decoder::CheckYenc()
 			return dsAuthFailed;
 		}
 
+		// AAD Subject (Body Standard Section 2.1): raw bytes of name parameter in =ybegin
+		if (m_rawArticleFilename.empty())
+		{
+			m_authFailed = true;
+			m_decryptedPlaintext.clear();
+			return dsAuthFailed;
+		}
+
+		uint32_t partNumber = m_part ? static_cast<uint32_t>(m_partNumber) : 1U;
+		uint32_t partBegin = m_part ? static_cast<uint32_t>(m_beginPos) : 1U;
+		uint64_t segmentBytes = m_part ? static_cast<uint64_t>(m_endPos - m_beginPos + 1) : static_cast<uint64_t>(m_size);
+
+		std::vector<uint8_t> aad = YEncDecryptor::BuildAad(m_rawArticleFilename, partNumber, partBegin, segmentBytes);
+		if (aad.empty())
+		{
+			m_authFailed = true;
+			m_decryptedPlaintext.clear();
+			return dsAuthFailed;
+		}
+
 		m_decryptedPlaintext.clear();
 		YEncDecryptor::Status st = m_decryptor->AuthenticateAndDecrypt(
 			m_cipherPayload.data(), m_cipherPayload.size(),
-			m_salt, m_tag, m_segmentIndex, m_decryptedPlaintext
+			m_salt, m_tag, m_segmentIndex, aad.data(), aad.size(), m_decryptedPlaintext
 		);
 		if (st != YEncDecryptor::Status::Ok)
 		{

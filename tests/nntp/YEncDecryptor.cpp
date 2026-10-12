@@ -20,6 +20,7 @@
 #include "nzbget.h"
 
 #include <boost/test/unit_test.hpp>
+#include <cstring>
 #include "Decoder.h"
 #include "YEncDecryptor.h"
 #include "YEncoder.h"
@@ -27,48 +28,15 @@
 #include "DownloadInfo.h"
 #include "Options.h"
 #include "ArticleDownloader.h"
+#include "YEncTestHelpers.h"
 
 #include <string>
 #include <vector>
 #include <sstream>
 #include <iomanip>
 
-namespace
-{
-
-std::vector<uint8_t> HexToBin(const std::string& hex)
-{
-	std::vector<uint8_t> bytes;
-	for (size_t i = 0; i < hex.length(); i += 2)
-	{
-		unsigned int byteVal = 0;
-		sscanf(hex.c_str() + i, "%02x", &byteVal);
-		bytes.push_back(static_cast<uint8_t>(byteVal));
-	}
-	return bytes;
-}
-
-std::string BinToHex(const uint8_t* data, size_t len)
-{
-	std::ostringstream oss;
-	for (size_t i = 0; i < len; ++i)
-	{
-		oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]);
-	}
-	return oss.str();
-}
-
-std::string yEncSimpleEncode(const std::vector<uint8_t>& data)
-{
-	std::string encoded;
-	for (uint8_t c : data)
-	{
-		encoded += static_cast<char>((c + 42) % 256);
-	}
-	return encoded;
-}
-
-} // anonymous namespace
+// Shared test helpers : one hex/yEnc helper set for all NNTP test TUs.
+using namespace YEncTest;
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
 
@@ -119,13 +87,14 @@ BOOST_AUTO_TEST_CASE(AuthenticateAndDecryptTestVector)
 	// Vector from body_encryption.json: body-vec-01-spec-example
 	std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
-	std::vector<uint8_t> tag = HexToBin("0cd77ce245a654463f90b945b1d22d5b");
+	std::vector<uint8_t> tag = HexToBin("24d9229edfc04aeaeedcf105bc91e695");
 	std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	std::vector<uint8_t> aad = YEncDecryptor::BuildAad("file.bin", 1, 1, 16);
 
 	std::vector<uint8_t> outPlaintext;
 	YEncDecryptor::Status st = decryptor.AuthenticateAndDecrypt(
 		ciphertext.data(), ciphertext.size(),
-		salt.data(), tag.data(), 1, outPlaintext);
+		salt.data(), tag.data(), 1, aad.data(), aad.size(), outPlaintext);
 
 	BOOST_CHECK_EQUAL(static_cast<int>(st), static_cast<int>(YEncDecryptor::Status::Ok));
 	BOOST_CHECK_EQUAL(BinToHex(outPlaintext.data(), outPlaintext.size()), BinToHex(expectedPlaintext.data(), expectedPlaintext.size()));
@@ -137,11 +106,12 @@ BOOST_AUTO_TEST_CASE(ZeroOutputOnCorruptTag)
 	std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
 	std::vector<uint8_t> corruptTag = HexToBin("ffffffffffffffffffffffffffffffff");
+	std::vector<uint8_t> aad = YEncDecryptor::BuildAad("file.bin", 1, 1, 16);
 
 	std::vector<uint8_t> outPlaintext;
 	YEncDecryptor::Status st = decryptor.AuthenticateAndDecrypt(
 		ciphertext.data(), ciphertext.size(),
-		salt.data(), corruptTag.data(), 1, outPlaintext);
+		salt.data(), corruptTag.data(), 1, aad.data(), aad.size(), outPlaintext);
 
 	BOOST_CHECK_EQUAL(static_cast<int>(st), static_cast<int>(YEncDecryptor::Status::AuthFailed));
 	BOOST_CHECK_EQUAL(outPlaintext.size(), 0); // Zero-Output Guarantee!
@@ -206,23 +176,42 @@ BOOST_AUTO_TEST_CASE(DecoderEncryptedIntegrationTest)
 	decoder.SetDecryptor(&decryptor);
 	// The segment index is discovered directly from the wire bytes
 
+	std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
-	std::string yencBody = yEncSimpleEncode(ciphertext);
+	std::string yencBody = SimpleYencEncode(ciphertext);
 
-	std::stringstream ss;
-	ss << "=ybegin line=128 size=" << ciphertext.size() << " name=test.dat\r\n";
-	ss << "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
-	ss << yencBody << "\r\n";
-	ss << "=yend size=" << ciphertext.size() << "\r\n";
-	ss << ".\r\n";
+	std::string line1Plain = "=ybegin line=128 size=" + std::to_string(ciphertext.size()) + " name=test.dat";
+	std::vector<uint8_t> wire1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		1, 1, true, salt.data(), wire1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string msg = ss.str();
-	int len = decoder.DecodeBuffer(msg.data(), msg.size());
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
+	std::vector<uint8_t> wire2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		1, 2, false, salt.data(), wire2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	BOOST_CHECK_EQUAL(len, static_cast<int>(ciphertext.size()));
+	std::string line4Plain = "=yend size=" + std::to_string(ciphertext.size());
+	std::vector<uint8_t> wire4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+		1, 4, false, salt.data(), wire4
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wire1.data()), wire1.size()); fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wire2.data()), wire2.size()); fullWire.append("\r\n");
+	fullWire.append(yencBody); fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wire4.data()), wire4.size()); fullWire.append("\r\n.\r\n");
+
+	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+
 	BOOST_CHECK(decoder.IsEncrypted());
 	BOOST_CHECK_EQUAL(BinToHex(decoder.GetSalt(), 16), "1a2b3c4d5e6f7890abcdef1234567890");
-	BOOST_CHECK_EQUAL(BinToHex(decoder.GetTag(), 16), "0cd77ce245a654463f90b945b1d22d5b");
+	BOOST_CHECK_EQUAL(BinToHex(decoder.GetTag(), 16), "a85856949ac1c3f44794f8d008fcdb13");
 	BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), 1U);
 
 	auto status = decoder.Check();
@@ -242,7 +231,7 @@ BOOST_AUTO_TEST_CASE(DecoderAuthFailureIntegrationTest)
 	decoder.SetDecryptor(&decryptor);
 
 	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
-	std::string yencBody = yEncSimpleEncode(ciphertext);
+	std::string yencBody = SimpleYencEncode(ciphertext);
 
 	// Corrupt tag
 	std::stringstream ss;
@@ -274,92 +263,92 @@ BOOST_AUTO_TEST_CASE(YEncryptionGrammarTest)
 	BOOST_CHECK_EQUAL(header.segmentIndex, 1U);
 
 	// malformed-header-01-bad-cipher
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=AES-256-GCM salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=AES-256-GCM salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=AES-256-GCM salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-02-chacha20-unauth
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=ChaCha20 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=ChaCha20 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=ChaCha20 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-03-empty-cipher
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher= salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher= salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher= salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-04-missing-salt
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=XChaCha20-Poly1305 index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-05-truncated-salt
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef12345678 index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef12345678 index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef12345678 index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-06-extended-salt
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890ff index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890ff index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890ff index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-07-non-hex-salt
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef12345678gz index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef12345678gz index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef12345678gz index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// Uppercase hex in salt
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1A2B3C4D5E6F7890ABCDEF1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1A2B3C4D5E6F7890ABCDEF1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1A2B3C4D5E6F7890ABCDEF1234567890 index=00000001 tag=ed70d238067735a20783df5e094ccafa"), header));
 
 	// malformed-header-08-missing-tag
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001"), header));
 
 	// malformed-header-09-truncated-tag
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d"), header));
 
 	// malformed-header-10-extended-tag
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b00", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b00", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b00"), header));
 
 	// malformed-header-11-non-hex-tag
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22dxy", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22dxy", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22dxy"), header));
 
 	// Uppercase hex in tag
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0CD77CE245A654463F90B945B1D22D5B", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0CD77CE245A654463F90B945B1D22D5B", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0CD77CE245A654463F90B945B1D22D5B"), header));
 
 	// malformed-header-12-missing-index
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// malformed-header-13-zero-index
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000000 tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000000 tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000000 tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// malformed-header-14-truncated-index
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=000001 tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=000001 tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=000001 tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// malformed-header-15-extended-index
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000001 tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000001 tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000001 tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// malformed-header-16-non-hex-index
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000z tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000z tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000z tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// malformed-header-17-uppercase-index
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000A tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000A tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=0000000A tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// Reordered tokens (salt before cipher)
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption salt=1a2b3c4d5e6f7890abcdef1234567890 cipher=XChaCha20-Poly1305 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption salt=1a2b3c4d5e6f7890abcdef1234567890 cipher=XChaCha20-Poly1305 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption salt=1a2b3c4d5e6f7890abcdef1234567890 cipher=XChaCha20-Poly1305 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 
 	// Extra tokens
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b extra=123", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b extra=123", std::strlen("=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b extra=123"), header));
 
 	// Extra whitespace
-	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(
-		"=yencryption  cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b", header));
+	BOOST_CHECK(!YEncDecryptor::YEncDecryptor::ParseYEncryption(
+		"=yencryption  cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b", std::strlen("=yencryption  cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b"), header));
 }
 
 BOOST_AUTO_TEST_CASE(YEncryptionMalformedInputsTest)
@@ -371,10 +360,11 @@ BOOST_AUTO_TEST_CASE(YEncryptionMalformedInputsTest)
 		std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 		std::vector<uint8_t> tamperedCt = HexToBin("6b0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28");
 		std::vector<uint8_t> tag = HexToBin("ed70d238067735a20783df5e094ccafa");
+		std::vector<uint8_t> aad = HexToBin("79656e632d626f647920616164000000010000000100000000000000200000000866696c652e62696e");
 		std::vector<uint8_t> outPt;
 
 		auto st = decryptor.AuthenticateAndDecrypt(
-			tamperedCt.data(), tamperedCt.size(), salt.data(), tag.data(), 1, outPt);
+			tamperedCt.data(), tamperedCt.size(), salt.data(), tag.data(), 1, aad.data(), aad.size(), outPt);
 		BOOST_CHECK_EQUAL(static_cast<int>(st), static_cast<int>(YEncDecryptor::Status::AuthFailed));
 		BOOST_CHECK_EQUAL(outPt.size(), 0);
 	}
@@ -385,10 +375,11 @@ BOOST_AUTO_TEST_CASE(YEncryptionMalformedInputsTest)
 		std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 		std::vector<uint8_t> ct = HexToBin("6a0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28");
 		std::vector<uint8_t> tamperedTag = HexToBin("ec70d238067735a20783df5e094ccafa");
+		std::vector<uint8_t> aad = HexToBin("79656e632d626f647920616164000000010000000100000000000000200000000866696c652e62696e");
 		std::vector<uint8_t> outPt;
 
 		auto st = decryptor.AuthenticateAndDecrypt(
-			ct.data(), ct.size(), salt.data(), tamperedTag.data(), 1, outPt);
+			ct.data(), ct.size(), salt.data(), tamperedTag.data(), 1, aad.data(), aad.size(), outPt);
 		BOOST_CHECK_EQUAL(static_cast<int>(st), static_cast<int>(YEncDecryptor::Status::AuthFailed));
 		BOOST_CHECK_EQUAL(outPt.size(), 0);
 	}
@@ -399,10 +390,11 @@ BOOST_AUTO_TEST_CASE(YEncryptionMalformedInputsTest)
 		std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 		std::vector<uint8_t> ct = HexToBin("6a0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28");
 		std::vector<uint8_t> tag = HexToBin("ed70d238067735a20783df5e094ccafa");
+		std::vector<uint8_t> aad = HexToBin("79656e632d626f647920616164000000010000000100000000000000200000000866696c652e62696e");
 		std::vector<uint8_t> outPt;
 
 		auto st = decryptor.AuthenticateAndDecrypt(
-			ct.data(), ct.size(), salt.data(), tag.data(), 1, outPt);
+			ct.data(), ct.size(), salt.data(), tag.data(), 1, aad.data(), aad.size(), outPt);
 		BOOST_CHECK_EQUAL(static_cast<int>(st), static_cast<int>(YEncDecryptor::Status::AuthFailed));
 		BOOST_CHECK_EQUAL(outPt.size(), 0);
 	}
@@ -413,10 +405,11 @@ BOOST_AUTO_TEST_CASE(YEncryptionMalformedInputsTest)
 		std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 		std::vector<uint8_t> ct = HexToBin("6a0d1eb225f844920540fa3628eb9ff9d3174ea7e14a5ba7da1f0f6e970aed28");
 		std::vector<uint8_t> tag = HexToBin("ed70d238067735a20783df5e094ccafa");
+		std::vector<uint8_t> aad = HexToBin("79656e632d626f647920616164000000010000000100000000000000200000000866696c652e62696e");
 		std::vector<uint8_t> outPt;
 
 		auto st = decryptor.AuthenticateAndDecrypt(
-			ct.data(), ct.size(), salt.data(), tag.data(), 2, outPt); // segment index 2 instead of 1
+			ct.data(), ct.size(), salt.data(), tag.data(), 2, aad.data(), aad.size(), outPt); // segment index 2 instead of 1
 		BOOST_CHECK_EQUAL(static_cast<int>(st), static_cast<int>(YEncDecryptor::Status::AuthFailed));
 		BOOST_CHECK_EQUAL(outPt.size(), 0);
 	}
@@ -563,7 +556,7 @@ BOOST_AUTO_TEST_CASE(YEncryptionZeroOutputTest)
 		segmentIndex, 2, false, salt.data(), wireLine2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string wireLine3 = yEncSimpleEncode(tamperedCt);
+	std::string wireLine3 = SimpleYencEncode(tamperedCt);
 
 	Crc32 crc;
 	crc.Append(tamperedCt.data(), tamperedCt.size());
@@ -647,7 +640,8 @@ BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
 	// Pre-fill outPlaintext with dummy values
 	outPlaintext.assign(64, 0xff);
 
-	auto st = decryptor.AuthenticateAndDecrypt(ct, sizeof(ct), salt, badTag, 1, outPlaintext);
+	std::vector<uint8_t> aad = YEncDecryptor::BuildAad("file.bin", 1, 1, 32);
+	auto st = decryptor.AuthenticateAndDecrypt(ct, sizeof(ct), salt, badTag, 1, aad.data(), aad.size(), outPlaintext);
 	BOOST_CHECK(st == YEncDecryptor::Status::AuthFailed);
 	// outPlaintext must be cleared and empty on AuthFailed
 	BOOST_CHECK(outPlaintext.empty());
@@ -707,6 +701,50 @@ BOOST_AUTO_TEST_CASE(ForbiddenSegmentIndexByteRejectTest)
 	auto st = decryptor.DecryptControlLine(
 		safeWire.data(), safeWire.size(), 0, 1, true, plaintext, &salt, &extractedIndex);
 	BOOST_CHECK_EQUAL(extractedIndex, 11U);
+}
+
+BOOST_AUTO_TEST_CASE(JobOwnedKeyCacheSharingTest)
+{
+	// Job-owned Argon2id master-key cache:
+	// 1. Sharing across separate YEncDecryptor instances for the same job.
+	// 2. Multiple salts support.
+	// 3. Cache clearing on password change or job teardown.
+	YEncKeyCache jobCache;
+	uint8_t salt1[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+	uint8_t salt2[16] = {16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+
+	// Worker 1: derives key for salt1 and stores into jobCache
+	YEncDecryptor worker1("secret_password", &jobCache);
+	BOOST_CHECK(worker1.EnsureMasterKey(salt1));
+	BOOST_CHECK_EQUAL(jobCache.Size(), 1U);
+
+	// Worker 2 (separate thread/instance on same job): fetches salt1 key instantly without running Argon2id
+	YEncDecryptor worker2("secret_password", &jobCache);
+	BOOST_CHECK(worker2.EnsureMasterKey(salt1));
+	BOOST_CHECK_EQUAL(jobCache.Size(), 1U);
+	BOOST_CHECK_EQUAL_COLLECTIONS(
+		worker1.GetCachedMasterKey().begin(), worker1.GetCachedMasterKey().end(),
+		worker2.GetCachedMasterKey().begin(), worker2.GetCachedMasterKey().end());
+
+	// Worker 2 derives key for salt2: jobCache now caches both salts
+	BOOST_CHECK(worker2.EnsureMasterKey(salt2));
+	BOOST_CHECK_EQUAL(jobCache.Size(), 2U);
+	BOOST_CHECK_NE(
+		BinToHex(worker2.GetCachedMasterKey().data(), 32),
+		BinToHex(worker1.GetCachedMasterKey().data(), 32));
+
+	// Worker 1 can now also use salt2 from cache
+	BOOST_CHECK(worker1.EnsureMasterKey(salt2));
+	BOOST_CHECK_EQUAL_COLLECTIONS(
+		worker1.GetCachedMasterKey().begin(), worker1.GetCachedMasterKey().end(),
+		worker2.GetCachedMasterKey().begin(), worker2.GetCachedMasterKey().end());
+
+	// Clearing cache (e.g. password change or job teardown) zeroizes and drops entries
+	jobCache.Clear();
+	BOOST_CHECK_EQUAL(jobCache.Size(), 0U);
+	uint8_t dummyKey[32];
+	BOOST_CHECK(!jobCache.GetKey(salt1, dummyKey));
+	BOOST_CHECK(!jobCache.GetKey(salt2, dummyKey));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

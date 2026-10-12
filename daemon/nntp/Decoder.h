@@ -65,6 +65,7 @@ public:
 	int64 GetBeginPos() { return m_beginPos; }
 	int64 GetEndPos() { return m_endPos; }
 	int64 GetSize() { return m_size; }
+	int GetPartNumber() const { return m_partNumber; }
 	uint32 GetExpectedCrc() { return m_expectedCRC; }
 	uint32 GetCalculatedCrc() { return m_calculatedCRC; }
 	bool GetEof() { return m_eof; }
@@ -79,11 +80,9 @@ public:
 	// Never compiled into release builds (define NZBGET_TESTING_HOOKS in the
 	// test target only).
 	uint32 GetSegmentIndex() const { return m_segmentIndex; }
-	void SetSegmentIndex(uint32 segmentIndex) { m_segmentIndex = segmentIndex; }
 	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
 	const uint8_t* GetSalt() const { return m_salt; }
 	const uint8_t* GetTag() const { return m_tag; }
-	const char* GetCipher() const { return m_cipher.c_str(); }
 #endif
 
 private:
@@ -118,7 +117,9 @@ private:
 	EFormat m_format = efUnknown;
 	bool m_begin;
 	bool m_part;
-	bool m_body; 
+	int m_partNumber = 1;
+	std::string m_rawArticleFilename;
+	bool m_body;
 	bool m_end;
 	bool m_crc;
 	uint32 m_expectedCRC;

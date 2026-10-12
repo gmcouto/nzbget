@@ -346,6 +346,17 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 		}
 	}
 
+	// Body Std v1.2 §8: RawArticle mode cannot decode an encrypted body (raw
+	// articles bypass the decryptor entirely and ciphertext would be committed
+	// or discarded as content). Reject BEFORE the BODY/ARTICLE request — no
+	// bytes are fetched and nothing is committed.
+	if (g_Options->GetRawArticle() && m_fileInfo && m_fileInfo->GetNzbInfo() &&
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted())
+	{
+		error("Article %s: RawArticle mode is unsupported for encrypted releases", *m_infoName);
+		return adFatalError;
+	}
+
 	// retrieve article
 	response = m_connection->Request(BString<1024>("%s %s\r\n",
 		g_Options->GetRawArticle() ? "ARTICLE" : "BODY", m_articleInfo->GetMessageId()));
@@ -367,9 +378,10 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	if (isEncrypted)
 	{
 		const char* pwd = m_fileInfo->GetNzbInfo()->GetPassword();
+		YEncKeyCache* keyCache = m_fileInfo->GetNzbInfo()->GetKeyCache();
 		if (!m_decryptor || m_decryptor->GetPassword() != pwd)
 		{
-			m_decryptor = std::make_unique<YEncDecryptor>(pwd);
+			m_decryptor = std::make_unique<YEncDecryptor>(pwd, keyCache);
 		}
 		m_decoder.SetDecryptor(m_decryptor.get());
 	}
@@ -535,6 +547,29 @@ bool ArticleDownloader::Write(char* buffer, int len)
 	return ok;
 }
 
+bool ArticleDownloader::ValidCommitGeometry(int64 fileSize, int64 beginPos, int64 endPos,
+	int64 decryptedSize)
+{
+	if (fileSize <= 0 || beginPos <= 0 || endPos < beginPos)
+	{
+		return false;
+	}
+
+	int64 expectedSpan = endPos - beginPos + 1;
+	if (decryptedSize <= 0 || decryptedSize != expectedSpan)
+	{
+		return false;
+	}
+
+	int64 articleOffset = beginPos - 1;
+	if (articleOffset < 0 || articleOffset + decryptedSize > fileSize)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 {
 	if (!g_Options->GetRawArticle())
@@ -581,9 +616,27 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 			if (isEncrypted)
 			{
 				int64 articleFileSize = m_decoder.GetSize();
-				int64 articleOffset = m_decoder.GetBeginPos() > 0 ? m_decoder.GetBeginPos() - 1 : 0;
+				int64 beginPos = m_decoder.GetBeginPos();
+				int64 endPos = m_decoder.GetEndPos();
 				int articleSize = static_cast<int>(m_decoder.GetDecryptedData().size());
 
+				// Authenticated commit geometry validation
+				// zero/negative/out-of-file offsets and span-size mismatch must fail
+				// before calling Start() or CommitAuthenticatedData() (provider failover tier).
+				// The shared predicate is used by the geometry unit tests too.
+				if (!ValidCommitGeometry(articleFileSize, beginPos, endPos, articleSize))
+				{
+					warn("Malformed encrypted article geometry %s: begin=%" PRIi64 " end=%" PRIi64
+						" size=%" PRIi64 " decrypted=%i",
+						*m_infoName, beginPos, endPos, articleFileSize, articleSize);
+					if (m_writingStarted)
+					{
+						m_articleWriter.DiscardStagedData();
+					}
+					return adNotFound;
+				}
+
+				int64 articleOffset = beginPos - 1;
 				if (!m_articleWriter.Start(m_decoder.GetFormat(), m_decoder.GetArticleFilename(),
 					articleFileSize, articleOffset, articleSize))
 				{

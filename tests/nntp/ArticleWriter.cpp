@@ -421,4 +421,41 @@ BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 	stdfs::remove_all(tempDir);
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedCommitGeometryValidationTest)
+{
+	// Authenticated commit geometry validation — zero/negative
+	// begin offsets, out-of-file offsets, and span-size mismatch must be
+	// rejected BEFORE any Start/CommitAuthenticatedData writes happen.
+	// The gate lives in ArticleDownloader::DecodeCheck and is factored into
+	// the shared predicate ArticleDownloader::ValidCommitGeometry; this test
+	// drives that shared predicate, so a production edit to the gate's logic
+	// cannot silently diverge from the tested behavior. (DecodeCheck applies
+	// this predicate verbatim before Start()/CommitAuthenticatedData.)
+	Options::CmdOptList cmdOpts;
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	// 1. Zero offset (beginPos == 0 → articleOffset = -1 after -1 subtraction).
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(32, 0, 16, 16));
+	// 2. Negative beginPos.
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(32, -5, 16, 16));
+	// 3. endPos < beginPos (negative span).
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(32, 16, 5, 16));
+	// 4. Zero/negative file size.
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(0, 1, 16, 16));
+	// 5. Span-size mismatch (decrypted size differs from endPos-beginPos+1).
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(32, 1, 16, 15));
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(32, 1, 16, 17));
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(32, 1, 16, 0));
+	// 6. Out-of-file offset: offset+span exceeds the declared file size.
+	BOOST_CHECK(!ArticleDownloader::ValidCommitGeometry(20, 10, 25, 16));
+	// 7. Valid geometry (sanity): single-part size=16, begin=1, end=16.
+	BOOST_CHECK(ArticleDownloader::ValidCommitGeometry(16, 1, 16, 16));
+	// 8. Valid multipart geometry: begin=17, end=32 in a 32-byte file.
+	BOOST_CHECK(ArticleDownloader::ValidCommitGeometry(32, 17, 32, 16));
+
+	g_Options = oldOptions;
+}
+
 BOOST_AUTO_TEST_SUITE_END()

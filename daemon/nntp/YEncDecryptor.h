@@ -25,6 +25,8 @@
 #include <cstdint>
 #include <cstddef>
 
+class YEncKeyCache;
+
 class YEncDecryptor
 {
 public:
@@ -35,14 +37,14 @@ public:
 		Error
 	};
 
-	explicit YEncDecryptor(const std::string& password = "");
+	explicit YEncDecryptor(const std::string& password = "", YEncKeyCache* keyCache = nullptr);
 	~YEncDecryptor();
 
-	void SetPassword(const std::string& password);
 	const std::string& GetPassword() const { return m_password; }
 
 	// Derives master key via Argon2id (RFC 9106: time=1, mem=64MB, parallelism=4, len=32),
-	// caching in memory by 16-byte salt.
+	// caching in memory by 16-byte salt. When a job-owned YEncKeyCache is attached,
+	// derived keys are shared (thread-safely) across all decryptors of the job.
 	bool EnsureMasterKey(const uint8_t salt[16]);
 
 	// Derives 24-byte body nonce using HMAC-SHA256 with 19-byte message layout:
@@ -62,7 +64,17 @@ public:
 		const uint8_t salt[16],
 		const uint8_t tag[16],
 		uint32_t segmentIndex,
+		const uint8_t* aad,
+		size_t aadLen,
 		std::vector<uint8_t>& outPlaintext
+	);
+
+	// Helper to build Section 2.1 Associated Data
+	static std::vector<uint8_t> BuildAad(
+		const std::string& name,
+		uint32_t partNumber,
+		uint32_t partBegin,
+		uint64_t segmentBytes
 	);
 
 	// Decrypt control line using Radix-253 FF1.
@@ -95,14 +107,6 @@ public:
 		size_t lineLen,
 		YEncryptionHeader& outHeader
 	);
-
-	static bool ParseYEncryption(
-		const char* line,
-		YEncryptionHeader& outHeader
-	)
-	{
-		return ParseYEncryption(line, line ? strlen(line) : 0, outHeader);
-	}
 
 	// Restores the plaintext control lines of an encrypted wire block.
 	// The authoritative segment index is extracted from the Line 1 bootstrap;
@@ -155,6 +159,7 @@ public:
 
 private:
 	std::string m_password;
+	YEncKeyCache* m_keyCache = nullptr;
 	bool m_sodiumInitFailed = false;
 	std::vector<uint8_t> m_cachedSalt;
 	std::vector<uint8_t> m_cachedMasterKey; // 32 bytes, zeroized on destruction or reset

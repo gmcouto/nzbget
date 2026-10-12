@@ -23,6 +23,7 @@
 #include "Options.h"
 #include "Decoder.h"
 #include "Log.h"
+#include "YEncTestHelpers.h"
 
 #include <filesystem>
 #include <fstream>
@@ -32,6 +33,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+// Shared test helpers : one hex/yEnc helper set for all NNTP test TUs.
+using namespace YEncTest;
 
 namespace
 {
@@ -71,43 +75,6 @@ std::string JsonString(const boost::json::object& object, const char* key)
 uint32_t JsonUint32(const boost::json::object& object, const char* key)
 {
 	return boost::json::value_to<uint32_t>(object.at(key));
-}
-
-std::vector<uint8_t> HexToBin(const std::string& hex)
-{
-	if (hex.size() % 2 != 0)
-	{
-		throw std::invalid_argument("hex input must have even length");
-	}
-	std::vector<uint8_t> bytes;
-	bytes.reserve(hex.size() / 2);
-	for (size_t i = 0; i < hex.size(); i += 2)
-	{
-		unsigned int byteValue = 0;
-		std::istringstream parser(hex.substr(i, 2));
-		parser >> std::hex >> byteValue;
-		if (parser.fail())
-		{
-			throw std::invalid_argument("hex input contains invalid characters");
-		}
-		bytes.push_back(static_cast<uint8_t>(byteValue));
-	}
-	return bytes;
-}
-
-std::string BinToHex(const uint8_t* data, size_t len)
-{
-	std::ostringstream result;
-	for (size_t i = 0; i < len; ++i)
-	{
-		result << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned int>(data[i]);
-	}
-	return result.str();
-}
-
-std::string BinToHex(const std::vector<uint8_t>& data)
-{
-	return BinToHex(data.data(), data.size());
 }
 
 // SHA-256 of raw fixture bytes as lowercase hex; used by the manifest sync test
@@ -190,7 +157,7 @@ BOOST_AUTO_TEST_CASE(DynamicArgon2idTestVectors)
 {
 	const auto fixture = LoadFixture("argon2id.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 6);
+	BOOST_REQUIRE_EQUAL(vectors.size(), 9);
 
 	for (const auto& item : vectors)
 	{
@@ -265,7 +232,7 @@ BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectors)
 {
 	const auto fixture = LoadFixture("body_encryption.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 8);
+	BOOST_REQUIRE_EQUAL(vectors.size(), 9);
 
 	for (const auto& item : vectors)
 	{
@@ -285,11 +252,25 @@ BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectors)
 			BOOST_CHECK_EQUAL(header.indexHex, expectedIndexHex);
 			BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
 
+			// AAD check per Section 2.1
+			std::vector<uint8_t> aad;
+			if (vector.contains("aad"))
+			{
+				const auto& aadObj = vector.at("aad").as_object();
+				const auto expectedAad = HexToBin(JsonString(aadObj, "expected_aad_hex"));
+				const auto nameBytes = HexToBin(JsonString(aadObj, "name_bytes_hex"));
+				std::string nameStr(reinterpret_cast<const char*>(nameBytes.data()), nameBytes.size());
+				aad = YEncDecryptor::BuildAad(nameStr, JsonUint32(aadObj, "part_number"),
+					JsonUint32(aadObj, "part_begin"),
+					boost::json::value_to<uint64_t>(aadObj.at("segment_bytes")));
+				BOOST_CHECK_EQUAL(BinToHex(aad), BinToHex(expectedAad));
+			}
+
 			YEncDecryptor decryptor(JsonString(vector, "password"));
 			std::vector<uint8_t> plaintext;
 			const auto status = decryptor.AuthenticateAndDecrypt(
 				ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-				JsonUint32(vector, "segment_index"), plaintext);
+				JsonUint32(vector, "segment_index"), aad.data(), aad.size(), plaintext);
 			BOOST_REQUIRE(status == YEncDecryptor::Status::Ok);
 			BOOST_CHECK_EQUAL(BinToHex(plaintext), BinToHex(expectedPlaintext));
 		}
@@ -300,7 +281,7 @@ BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
 {
 	const auto fixture = LoadFixture("control_line_encryption.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 8);
+	BOOST_REQUIRE_EQUAL(vectors.size(), 11);
 
 	for (const auto& item : vectors)
 	{
@@ -394,10 +375,15 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 					vector, vector.contains("tampered_ciphertext_hex") ? "tampered_ciphertext_hex" : "ciphertext_hex"));
 				const auto tag = HexToBin(JsonString(
 					vector, vector.contains("tampered_tag_hex") ? "tampered_tag_hex" : "tag_hex"));
+				std::vector<uint8_t> aad;
+				if (vector.contains("aad_hex"))
+				{
+					aad = HexToBin(JsonString(vector, "aad_hex"));
+				}
 				YEncDecryptor decryptor(JsonString(vector, "password"));
 				const auto status = decryptor.AuthenticateAndDecrypt(
 					ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-					JsonUint32(vector, "segment_index"), output);
+					JsonUint32(vector, "segment_index"), aad.data(), aad.size(), output);
 				BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
 				CheckZeroOutput(vector, output);
 			}
@@ -546,18 +532,20 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 
 				if (expectedError == "MISSING_PASSWORD")
 				{
-					// Structural abort at queue time — Parse() fails with a
-					// METADATA_VALIDATION error message, no server contact.
-					BOOST_CHECK(!parsed);
+					// Structural tier (NG-4 round 2): the release parses, but the
+					// effective-password gate in Scanner::AddFileToQueue /
+					// ProcessStandalone rejects it AFTER the caller-parameter
+					// merge — an API-supplied *Unpack:Password can still satisfy
+					// the requirement, so the check must run post-merge. Here no
+					// parameter source exists: the effective password is empty,
+					// exactly the condition the Scanner gate rejects with
+					// METADATA_VALIDATION (see ScannerEffectivePasswordGateTest).
+					BOOST_CHECK(parsed);
 					BOOST_REQUIRE(nzbInfo);
-					for (Message& message : nzbInfo->GuardCachedMessages())
-					{
-						if (message.GetKind() == Message::mkError &&
-							strstr(message.GetText(), "METADATA_VALIDATION"))
-						{
-							structurallyRejected = true;
-						}
-					}
+					BOOST_CHECK(nzbInfo->IsYEncEncrypted());
+					BOOST_CHECK_EQUAL(nzbInfo->GetPassword(), "");
+					structurallyRejected = nzbInfo->IsYEncEncrypted() &&
+						(!nzbInfo->GetPassword() || nzbInfo->GetPassword()[0] == '\0');
 					BOOST_CHECK(structurallyRejected);
 				}
 				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
@@ -666,7 +654,7 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 
 	const auto fixture = LoadFixture("nzb_segment_identity.json");
 	const auto& vectors = fixture.at("vectors").as_array();
-	BOOST_REQUIRE_EQUAL(vectors.size(), 10U);
+	BOOST_REQUIRE_EQUAL(vectors.size(), 16U);
 
 	for (const auto& item : vectors)
 	{
@@ -712,9 +700,14 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 				{
 					const auto ciphertext = HexToBin(JsonString(vector, "ciphertext_hex"));
 					const auto tag = HexToBin(JsonString(vector, "tag_hex"));
+					std::vector<uint8_t> aad;
+					if (vector.contains("aad_hex"))
+					{
+						aad = HexToBin(JsonString(vector, "aad_hex"));
+					}
 					const auto status = decryptor.AuthenticateAndDecrypt(
 						ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-						JsonUint32(vector, "tampered_segment_index"), plaintext);
+						JsonUint32(vector, "tampered_segment_index"), aad.data(), aad.size(), plaintext);
 					BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
 					BOOST_CHECK(plaintext.empty());
 				}
@@ -725,15 +718,42 @@ BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
 						const auto& segment = segmentItem.as_object();
 						const auto ciphertext = HexToBin(JsonString(segment, "ciphertext_hex"));
 						const auto tag = HexToBin(JsonString(segment, "tag_hex"));
+						std::vector<uint8_t> aad;
+						if (segment.contains("aad_hex"))
+						{
+							aad = HexToBin(JsonString(segment, "aad_hex"));
+						}
 						plaintext.clear();
 						YEncDecryptor segmentDecryptor(JsonString(vector, "password"));
 						const auto status = segmentDecryptor.AuthenticateAndDecrypt(
 							ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-							JsonUint32(segment, "tampered_segment_index"), plaintext);
+							JsonUint32(segment, "tampered_segment_index"), aad.data(), aad.size(), plaintext);
 						BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
 						BOOST_CHECK(plaintext.empty());
 					}
 				}
+			}
+			else if (category == "metadata_mutation")
+			{
+				BOOST_REQUIRE(parsed);
+				BOOST_REQUIRE(nzbInfo);
+				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
+
+				YEncDecryptor decryptor(JsonString(vector, "password"));
+				const auto salt = HexToBin(JsonString(vector, "salt_hex"));
+				const auto ciphertext = HexToBin(JsonString(vector, "ciphertext_hex"));
+				const auto tag = HexToBin(JsonString(vector, "tag_hex"));
+				std::vector<uint8_t> aad;
+				if (vector.contains("aad_hex"))
+				{
+					aad = HexToBin(JsonString(vector, "aad_hex"));
+				}
+				std::vector<uint8_t> plaintext;
+				const auto status = decryptor.AuthenticateAndDecrypt(
+					ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
+					JsonUint32(vector, "segment_index"), aad.data(), aad.size(), plaintext);
+				BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
+				BOOST_CHECK(plaintext.empty());
 			}
 		}
 	}

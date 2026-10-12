@@ -19,6 +19,8 @@
 
 #include "nzbget.h"
 #include "YEncDecryptor.h"
+#include "YEncKeyCache.h"
+#include "Ff1Primitives.h"
 #include "Log.h"
 
 #include <sodium.h>
@@ -32,6 +34,9 @@
 #include <algorithm>
 #include <stdexcept>
 #include <memory>
+
+using Ff1::ByteToNumeral;
+using Ff1::NumeralToByte;
 
 namespace
 {
@@ -73,71 +78,21 @@ struct BignumDeleter
 };
 using ScopedBignum = std::unique_ptr<BIGNUM, BignumDeleter>;
 
-static uint8_t ByteToNumeral(uint8_t b)
+static bool IsStrictLowerHex(const char* s, size_t len)
 {
-	if (b >= 0x01 && b <= 0x09) return b - 1;
-	if (b == 0x0B) return 9;
-	if (b == 0x0C) return 10;
-	if (b >= 0x0E) return b - 3;
-	throw std::runtime_error("Forbidden byte outside 253-byte Alphabet");
-}
-
-static uint8_t NumeralToByte(uint8_t num)
-{
-	if (num <= 8) return num + 1;
-	if (num == 9) return 0x0B;
-	if (num == 10) return 0x0C;
-	if (num <= 252) return num + 3;
-	throw std::runtime_error("Numeral out of range [0, 252]");
-}
-
-static void NumRadix(const std::vector<uint8_t>& numerals, int radix, BIGNUM* outBn, BN_CTX* ctx)
-{
-	BN_zero(outBn);
-	for (uint8_t n : numerals)
+	for (size_t i = 0; i < len; ++i)
 	{
-		BN_mul_word(outBn, radix);
-		BN_add_word(outBn, n);
-	}
-}
-
-static std::vector<uint8_t> StrRadix(const BIGNUM* inBn, int radix, int m, BN_CTX* ctx)
-{
-	std::vector<uint8_t> res(m, 0);
-	ScopedBignum val(BN_dup(inBn));
-	if (!val)
-	{
-		throw std::bad_alloc();
-	}
-	for (int i = 0; i < m; ++i)
-	{
-		BN_ULONG rem = BN_div_word(val.get(), radix);
-		res[m - 1 - i] = static_cast<uint8_t>(rem);
-	}
-	return res;
-}
-
-static void AesEcbEncrypt(EVP_CIPHER_CTX* ctx, const uint8_t in[16], uint8_t out[16])
-{
-	int outl = 0;
-	EVP_EncryptUpdate(ctx, out, &outl, in, 16);
-}
-
-static std::vector<uint8_t> CbcMac(EVP_CIPHER_CTX* ctx, const std::vector<uint8_t>& data)
-{
-	std::vector<uint8_t> block(16, 0);
-	uint8_t tmp[16];
-	for (size_t i = 0; i < data.size(); i += 16)
-	{
-		for (int k = 0; k < 16; ++k)
+		char c = s[i];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
 		{
-			tmp[k] = block[k] ^ data[i + k];
+			return false;
 		}
-		AesEcbEncrypt(ctx, tmp, block.data());
 	}
-	return block;
+	return true;
 }
 
+// FF1 decrypt (NIST SP 800-38G §6, radix 253): runs the 10-round Feistel
+// backwards using the shared round-PRF scaffolding from Ff1Primitives.h.
 static std::vector<uint8_t> Ff1DecryptNumerals(
 	const uint8_t key[32],
 	const uint8_t* tweak, size_t tweakLen,
@@ -152,142 +107,47 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	EVP_EncryptInit_ex(aesCtx.get(), EVP_aes_256_ecb(), nullptr, key, nullptr);
 	EVP_CIPHER_CTX_set_padding(aesCtx.get(), 0);
 
-	ScopedBnCtx bnCtx(BN_CTX_new());
-	if (!bnCtx)
-	{
-		throw std::bad_alloc();
-	}
-	BN_CTX_start(bnCtx.get());
-
 	int n = static_cast<int>(numerals.size());
 	int t = static_cast<int>(tweakLen);
 	int u = n / 2;
 	int v = n - u;
-	int b = static_cast<int>(std::ceil(std::ceil(v * std::log2(static_cast<double>(radix))) / 8.0));
-	int d = 4 * static_cast<int>(std::ceil(b / 4.0)) + 4;
-
-	std::vector<uint8_t> p(16, 0);
-	p[0] = 1; p[1] = 2; p[2] = 1;
-	p[3] = (radix >> 16) & 0xFF;
-	p[4] = (radix >> 8) & 0xFF;
-	p[5] = radix & 0xFF;
-	p[6] = 10;
-	p[7] = u % 256;
-	p[8] = (n >> 24) & 0xFF; p[9] = (n >> 16) & 0xFF; p[10] = (n >> 8) & 0xFF; p[11] = n & 0xFF;
-	p[12] = (t >> 24) & 0xFF; p[13] = (t >> 16) & 0xFF; p[14] = (t >> 8) & 0xFF; p[15] = t & 0xFF;
-
-	int padLen = ((-t - b - 1) % 16 + 16) % 16;
-	std::vector<uint8_t> qPrefix;
-	qPrefix.insert(qPrefix.end(), tweak, tweak + tweakLen);
-	qPrefix.insert(qPrefix.end(), padLen, 0);
 
 	std::vector<uint8_t> A(numerals.begin(), numerals.begin() + u);
 	std::vector<uint8_t> B(numerals.begin() + u, numerals.end());
 
-	BIGNUM* bnNumA = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnNumB = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnY = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnMod = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnRadix = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnC = BN_CTX_get(bnCtx.get());
-	BIGNUM* bnM = BN_CTX_get(bnCtx.get());
-	if (!bnNumA || !bnNumB || !bnY || !bnMod || !bnRadix || !bnC || !bnM)
-	{
-		return {};
-	}
-	BN_set_word(bnRadix, radix);
-
 	for (int roundIdx = 0; roundIdx < 10; ++roundIdx)
 	{
 		int i = 9 - roundIdx;
-		NumRadix(A, radix, bnNumA, bnCtx.get());
-		std::vector<uint8_t> numABytes(b, 0);
-		BN_bn2binpad(bnNumA, numABytes.data(), b);
-
-		std::vector<uint8_t> q = qPrefix;
-		q.push_back(static_cast<uint8_t>(i));
-		q.insert(q.end(), numABytes.begin(), numABytes.end());
-
-		std::vector<uint8_t> pq = p;
-		pq.insert(pq.end(), q.begin(), q.end());
-
-		std::vector<uint8_t> R = CbcMac(aesCtx.get(), pq);
-		std::vector<uint8_t> S = R;
-		uint32_t j = 1;
-		while (S.size() < static_cast<size_t>(d))
-		{
-			uint8_t jBytes[16] = {0};
-			jBytes[12] = (j >> 24) & 0xFF;
-			jBytes[13] = (j >> 16) & 0xFF;
-			jBytes[14] = (j >> 8) & 0xFF;
-			jBytes[15] = j & 0xFF;
-
-			uint8_t blk[16];
-			for (int k = 0; k < 16; ++k) blk[k] = R[k] ^ jBytes[k];
-			uint8_t encBlk[16];
-			AesEcbEncrypt(aesCtx.get(), blk, encBlk);
-			S.insert(S.end(), encBlk, encBlk + 16);
-			j++;
-		}
-
-		BN_bin2bn(S.data(), d, bnY);
+		std::vector<uint8_t> S = Ff1::RoundPrf(aesCtx.get(), radix, n, t, u, v,
+			tweak, A, i);
+		int d = static_cast<int>(S.size());
+		BIGNUM* bnY = BN_bin2bn(S.data(), d, nullptr);
+		BIGNUM* bnNumB = BN_new();
+		BIGNUM* bnMod = BN_new();
+		BIGNUM* bnC = BN_new();
+		BN_CTX* ctx = BN_CTX_new();
 		int m = (i % 2 == 0) ? u : v;
-
-		BN_set_word(bnM, m);
-		BN_exp(bnMod, bnRadix, bnM, bnCtx.get());
-
-		NumRadix(B, radix, bnNumB, bnCtx.get());
-
+		Ff1::NumRadix(B, radix, bnNumB, ctx);
+		BIGNUM* bnRadix = BN_new();
+		BN_set_word(bnRadix, radix);
+		BN_set_word(bnMod, m);
+		BN_exp(bnMod, bnRadix, bnMod, ctx);
 		BN_sub(bnC, bnNumB, bnY);
-		BN_nnmod(bnC, bnC, bnMod, bnCtx.get());
-
-		std::vector<uint8_t> C = StrRadix(bnC, radix, m, bnCtx.get());
+		BN_nnmod(bnC, bnC, bnMod, ctx);
+		std::vector<uint8_t> C = Ff1::StrRadix(bnC, radix, m, ctx);
+		BN_free(bnY);
+		BN_free(bnNumB);
+		BN_free(bnMod);
+		BN_free(bnC);
+		BN_free(bnRadix);
+		BN_CTX_free(ctx);
 		B = A;
 		A = C;
 	}
 
 	std::vector<uint8_t> result = A;
 	result.insert(result.end(), B.begin(), B.end());
-
 	return result;
-}
-
-static bool HexToBytes(const char* hex, size_t hexLen, uint8_t* outBytes, size_t outLen)
-{
-	if (hexLen != outLen * 2)
-	{
-		return false;
-	}
-	for (size_t i = 0; i < outLen; ++i)
-	{
-		auto hexVal = [](char c) -> int {
-			if (c >= '0' && c <= '9') return c - '0';
-			if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-			if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-			return -1;
-		};
-		int hi = hexVal(hex[i * 2]);
-		int lo = hexVal(hex[i * 2 + 1]);
-		if (hi < 0 || lo < 0)
-		{
-			return false;
-		}
-		outBytes[i] = static_cast<uint8_t>((hi << 4) | lo);
-	}
-	return true;
-}
-
-static bool IsStrictLowerHex(const char* s, size_t len)
-{
-	for (size_t i = 0; i < len; ++i)
-	{
-		char c = s[i];
-		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-		{
-			return false;
-		}
-	}
-	return true;
 }
 
 static bool HexToBytesStrict(const char* hex, size_t hexLen, uint8_t* outBytes, size_t outLen)
@@ -320,8 +180,9 @@ static bool HexToBytesStrict(const char* hex, size_t hexLen, uint8_t* outBytes, 
 
 } // anonymous namespace
 
-YEncDecryptor::YEncDecryptor(const std::string& password)
+YEncDecryptor::YEncDecryptor(const std::string& password, YEncKeyCache* keyCache)
 	: m_password(password)
+	, m_keyCache(keyCache)
 {
 	// A libsodium initialization failure is a hard crypto error, not a
 	// condition to silently continue from — every subsequent AEAD/FF1 call
@@ -349,12 +210,6 @@ void YEncDecryptor::ClearMasterKey()
 	m_cachedSalt.clear();
 }
 
-void YEncDecryptor::SetPassword(const std::string& password)
-{
-	m_password = password;
-	ClearMasterKey();
-}
-
 bool YEncDecryptor::EnsureMasterKey(const uint8_t salt[16])
 {
 	if (!m_cachedSalt.empty() && m_cachedSalt.size() == 16 && memcmp(m_cachedSalt.data(), salt, 16) == 0)
@@ -369,11 +224,29 @@ bool YEncDecryptor::EnsureMasterKey(const uint8_t salt[16])
 
 	ClearMasterKey();
 
+	// Check job-owned key cache first
+	if (m_keyCache)
+	{
+		uint8_t cachedKey[32];
+		if (m_keyCache->GetKey(salt, cachedKey))
+		{
+			m_cachedSalt.assign(salt, salt + 16);
+			m_cachedMasterKey.assign(cachedKey, cachedKey + 32);
+			sodium_memzero(cachedKey, sizeof(cachedKey));
+			return true;
+		}
+	}
+
 	uint8_t key[32];
 	int res = argon2id_hash_raw(1, 65536, 4, m_password.data(), m_password.size(), salt, 16, key, 32);
 	if (res != ARGON2_OK)
 	{
 		return false;
+	}
+
+	if (m_keyCache)
+	{
+		m_keyCache->PutKey(salt, key);
 	}
 
 	m_cachedSalt.assign(salt, salt + 16);
@@ -439,6 +312,8 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 	const uint8_t salt[16],
 	const uint8_t tag[16],
 	uint32_t segmentIndex,
+	const uint8_t* aad,
+	size_t aadLen,
 	std::vector<uint8_t>& outPlaintext)
 {
 	outPlaintext.clear();
@@ -474,7 +349,7 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 		outPlaintext.data(), &decryptedLen,
 		nullptr,
 		ctAndTag.data(), ctAndTag.size(),
-		nullptr, 0,
+		aad, aadLen,
 		nonce, m_cachedMasterKey.data());
 
 	sodium_memzero(ctAndTag.data(), ctAndTag.size());
@@ -489,6 +364,49 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 
 	outPlaintext.resize(decryptedLen);
 	return Status::Ok;
+}
+
+std::vector<uint8_t> YEncDecryptor::BuildAad(
+	const std::string& name,
+	uint32_t partNumber,
+	uint32_t partBegin,
+	uint64_t segmentBytes)
+{
+	// Exact AAD serialization (Body Standard Section 2.1):
+	// "yenc-body aad" (13B) + uint32_be(partNumber) (4B) + uint32_be(partBegin) (4B)
+	// + uint64_be(segmentBytes) (8B) + uint32_be(nameLength) (4B) + nameBytes
+	if (name.empty())
+	{
+		return {};
+	}
+	std::vector<uint8_t> aad;
+	aad.reserve(33 + name.size());
+	const char prefix[] = "yenc-body aad";
+	aad.insert(aad.end(), reinterpret_cast<const uint8_t*>(prefix), reinterpret_cast<const uint8_t*>(prefix) + 13);
+
+	aad.push_back(static_cast<uint8_t>((partNumber >> 24) & 0xFF));
+	aad.push_back(static_cast<uint8_t>((partNumber >> 16) & 0xFF));
+	aad.push_back(static_cast<uint8_t>((partNumber >> 8) & 0xFF));
+	aad.push_back(static_cast<uint8_t>(partNumber & 0xFF));
+
+	aad.push_back(static_cast<uint8_t>((partBegin >> 24) & 0xFF));
+	aad.push_back(static_cast<uint8_t>((partBegin >> 16) & 0xFF));
+	aad.push_back(static_cast<uint8_t>((partBegin >> 8) & 0xFF));
+	aad.push_back(static_cast<uint8_t>(partBegin & 0xFF));
+
+	for (int shift = 56; shift >= 0; shift -= 8)
+	{
+		aad.push_back(static_cast<uint8_t>((segmentBytes >> shift) & 0xFF));
+	}
+
+	uint32_t nameLen = static_cast<uint32_t>(name.size());
+	aad.push_back(static_cast<uint8_t>((nameLen >> 24) & 0xFF));
+	aad.push_back(static_cast<uint8_t>((nameLen >> 16) & 0xFF));
+	aad.push_back(static_cast<uint8_t>((nameLen >> 8) & 0xFF));
+	aad.push_back(static_cast<uint8_t>(nameLen & 0xFF));
+
+	aad.insert(aad.end(), reinterpret_cast<const uint8_t*>(name.data()), reinterpret_cast<const uint8_t*>(name.data()) + name.size());
+	return aad;
 }
 
 YEncDecryptor::Status YEncDecryptor::DecryptControlLine(

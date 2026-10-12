@@ -31,6 +31,7 @@
 #include "Observer.h"
 #include "Log.h"
 #include "Thread.h"
+#include "YEncKeyCache.h"
 
 class NzbInfo;
 class DownloadQueue;
@@ -618,6 +619,7 @@ public:
 	void SetAddUrlPaused(bool addUrlPaused) { m_addUrlPaused = addUrlPaused; }
 	FileList* GetFileList() { return &m_fileList; }
 	NzbParameterList* GetParameters() { return &m_ppParameters; }
+	YEncKeyCache* GetKeyCache() { return &m_keyCache; }
 	const char* GetPassword()
 	{
 		NzbParameter* param = m_ppParameters.Find("*Unpack:Password");
@@ -781,6 +783,7 @@ private:
 	uint32 m_filteredContentHash = 0;
 	FileList m_fileList;
 	NzbParameterList m_ppParameters;
+	YEncKeyCache m_keyCache;
 	ScriptStatusList m_scriptStatuses;
 	ServerStatList m_serverStats;
 	ServerStatList m_currentServerStats;

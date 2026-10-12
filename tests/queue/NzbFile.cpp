@@ -488,8 +488,14 @@ BOOST_AUTO_TEST_CASE(YEncEncryptedMetaParsingTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 {
-	// Structural tier: yenc_encrypted release without password meta must fail
-	// at parse/queue time (METADATA_VALIDATION) — no server contact ever happens.
+	// Structural tier: yenc_encrypted release without password meta and
+	// without a filename token must fail with METADATA_VALIDATION — but at
+	// the effective-password gate AFTER the caller-parameter merge
+	// (Scanner::AddFileToQueue / ProcessStandalone, NG-4), because an
+	// API-supplied *Unpack:Password can still satisfy the requirement.
+	// Parse() itself accepts the release; this test pins the parse-level
+	// contract: passwordless metadata still yields a parsable NzbInfo that
+	// reports no effective password.
 	auto parseXml = [](std::string_view xml, const std::string& filename) -> std::pair<bool, std::unique_ptr<NzbInfo>>
 	{
 		const fs::path tempNzb = fs::temp_directory_path() / filename;
@@ -512,36 +518,20 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 		"</file>\n"
 		"</nzb>\n";
 	auto [ok, info] = parseXml(xml, "enc_nopwd.nzb");
-	BOOST_CHECK(!ok);
+	BOOST_CHECK(ok);
 	BOOST_REQUIRE(info);
-	bool foundValidation = false;
-	bool foundAuthFailure = false;
-	if (info)
-	{
-		for (Message& message : info->GuardCachedMessages())
-		{
-			if (message.GetKind() == Message::mkError &&
-				strstr(message.GetText(), "METADATA_VALIDATION"))
-			{
-				foundValidation = true;
-			}
-			// Structural abort must never be classified as a server/auth failure.
-			if (strstr(message.GetText(), "dsAuthFailed"))
-			{
-				foundAuthFailure = true;
-			}
-		}
-	}
-	BOOST_CHECK(foundValidation);
-	BOOST_CHECK(!foundAuthFailure);
-
+	BOOST_CHECK(info->IsYEncEncrypted());
+	// No effective password at parse level: the Scanner/standalone gate
+	// rejects this release (see ScannerEffectivePasswordGateTest).
+	BOOST_CHECK_EQUAL(info->GetPassword(), "");
 }
 
-BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameFailsValidationTest)
+BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameAcceptedTest)
 {
-	// Password source constraint: downloaders use only <meta type="password">
-	// from the NZB for encrypted wire decryption. Filename passwords are not
-	// used for encrypted wire validation.
+	// The filename {{...}} token is a supported app-native password source.
+	// An encrypted release whose ONLY password is the filename token must parse
+	// successfully at ingest; the resolved password is exposed via GetPassword()
+	// so Scanner/process-standalone can publish *Unpack:Password.
 	const fs::path tempNzb = fs::temp_directory_path() / "Release {{filename_secret}}.nzb";
 	const std::string xml =
 		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -558,18 +548,121 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithPasswordInFilenameFailsValidationTest)
 	std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
 	fs::remove(tempNzb);
 
-	BOOST_CHECK(!ok);
+	BOOST_CHECK(ok);
 	BOOST_REQUIRE(nzbInfo);
-	bool foundValidation = false;
-	for (Message& message : nzbInfo->GuardCachedMessages())
+	BOOST_CHECK(nzbInfo->IsYEncEncrypted());
+	BOOST_CHECK_EQUAL(nzbFile.GetPassword(), "filename_secret");
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedReleaseUnsupportedVersionTest)
+{
+	// Unsupported yenc_version on an encrypted release is a structural
+	// METADATA_VALIDATION failure at queue time — independent of meta ordering.
+	auto parseXml = [](const std::string& headMeta, const std::string& filename) ->
+		std::pair<bool, std::unique_ptr<NzbInfo>>
 	{
-		if (message.GetKind() == Message::mkError &&
-			strstr(message.GetText(), "METADATA_VALIDATION"))
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head>" + headMeta + "</head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"test.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	auto hasValidation = [](const std::unique_ptr<NzbInfo>& info) -> bool
+	{
+		bool found = false;
+		for (Message& message : info->GuardCachedMessages())
 		{
-			foundValidation = true;
+			if (message.GetKind() == Message::mkError &&
+				strstr(message.GetText(), "METADATA_VALIDATION"))
+			{
+				found = true;
+			}
 		}
+		return found;
+	};
+
+	// Unsupported version (before the encrypted marker)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">1.0</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_bad_version_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
 	}
-	BOOST_CHECK(foundValidation);
+
+	// Unsupported version (after the encrypted marker)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">2.0</meta>",
+			"enc_bad_version_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Supported version parses fine
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_good_version.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// Unsupported cipher
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_bad_cipher.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Supported cipher parses fine
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_good_cipher.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// Version/cipher metas on a NON-encrypted release are ignored
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">9.9</meta>"
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>",
+			"enc_metas_unencrypted.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+	}
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -244,17 +244,49 @@ void NzbFile::CalcHashes()
 	m_nzbInfo->SetFilteredContentHash(filteredContentHash);
 }
 
-bool NzbFile::ValidateEncryptedReleasePassword()
+bool NzbFile::ValidateEncryptedReleaseMetadata()
 {
-	// Structural tier (METADATA_VALIDATION, Body Std v1.2 §5): an encrypted release without a
-	// password can never authenticate. Abort at queue time — before any server
+	// Structural tier (METADATA_VALIDATION, Body Std v1.2 §5): failures here can
+	// never authenticate. Abort at queue time — before any server
 	// contact — instead of burning every provider with per-article auth failures.
-	if (m_yencEncryptedMeta && m_password.empty())
+
+	// Resolve every supported password source BEFORE the missing-password
+	// check. <meta type="password"> is the interoperable default; the NZB
+	// filename {{...}} token is the app-native override consumed by
+	// ReadPasswordFromFilename. External sources (API/CLI parameters) are
+	// applied by Scanner/ProcessStandalone after Parse; those callers enforce
+	// the effective-password gate AFTER the parameter merge (Scanner gate +
+	// ProcessStandalone gate), because only then are all sources known.
+	if (m_yencEncryptedMeta)
 	{
-		m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
-			"Error parsing nzb-file %s: METADATA_VALIDATION: yenc_encrypted release has no password",
-			FileSystem::BaseFileName(m_fileName.c_str())));
-		return false;
+		if (m_password.empty())
+		{
+			ReadPasswordFromFilename();
+		}
+
+		// Supplied yenc_version/yenc_cipher must be locally supported
+		// (ordering-independent: both metas are captured during SAX parsing and
+		// validated here, after the whole head was consumed).
+		if (!m_yencVersionMeta.empty() && m_yencVersionMeta != "1.2")
+		{
+			m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
+				"Error parsing nzb-file %s: METADATA_VALIDATION: unsupported yenc_version: %s",
+				FileSystem::BaseFileName(m_fileName.c_str()), m_yencVersionMeta.c_str()));
+			return false;
+		}
+
+		if (!m_yencCipherMeta.empty() && strcasecmp(m_yencCipherMeta.c_str(), "XChaCha20-Poly1305") != 0)
+		{
+			m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
+				"Error parsing nzb-file %s: METADATA_VALIDATION: unsupported yenc_cipher: %s",
+				FileSystem::BaseFileName(m_fileName.c_str()), m_yencCipherMeta.c_str()));
+			return false;
+		}
+
+		// The missing-password check happens after the Scanner/standalone
+		// parameter merge (see Scanner::AddFileToQueue / ProcessStandalone).
+		// A release with neither meta nor filename password still parses; it is
+		// rejected there unless an API parameter supplied *Unpack:Password.
 	}
 	return true;
 }
@@ -265,7 +297,10 @@ bool NzbFile::ProcessFiles()
 	// the NZB contributes the yenc_encrypted gate and the password.
 	m_nzbInfo->SetYEncEncrypted(m_yencEncryptedMeta);
 
-	if (!ValidateEncryptedReleasePassword())
+	// Version/cipher validation (structural tier) happens at parse time;
+	// the missing-password check moved to the post-merge gate in
+	// Scanner::AddFileToQueue / ProcessStandalone (NG-4).
+	if (!ValidateEncryptedReleaseMetadata())
 	{
 		return false;
 	}
@@ -315,6 +350,9 @@ bool NzbFile::ProcessFiles()
 	if (m_password.empty())
 	{
 		ReadPasswordFromFilename();
+		// Keep the resolved effective password available to Scanner / standalone
+		// mode (GetPassword) so the *Unpack:Password parameter is set from every
+		// supported source, not only from <meta type="password">.
 	}
 
 	m_metaName = FileSystem::SanitizePathSegment(m_metaName);
@@ -467,6 +505,8 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 		m_hasName = false;
 		m_hasTitle = false;
 		m_hasYEncEncrypted = false;
+		m_hasYEncVersion = false;
+		m_hasYEncCipher = false;
 
 		if (!atts)
 		{
@@ -483,6 +523,8 @@ void NzbFile::Parse_StartElement(const char *name, const char **atts)
 				else if (!strcasecmp("name", atts[i + 1])) m_hasName = true;
 				else if (!strcasecmp("title", atts[i + 1])) m_hasTitle = true;
 				else if (!strcasecmp("yenc_encrypted", atts[i + 1])) m_hasYEncEncrypted = true;
+				else if (!strcasecmp("yenc_version", atts[i + 1])) m_hasYEncVersion = true;
+				else if (!strcasecmp("yenc_cipher", atts[i + 1])) m_hasYEncCipher = true;
 			}
 		}
 	}
@@ -544,6 +586,16 @@ void NzbFile::Parse_EndElement(const char *name)
 		{
 			m_yencEncryptedMeta = true;
 		}
+	}
+	else if (!strcmp("meta", name) && m_hasYEncVersion)
+	{
+		m_yencVersionMeta = *m_tagContent;
+		Util::Trim(m_yencVersionMeta);
+	}
+	else if (!strcmp("meta", name) && m_hasYEncCipher)
+	{
+		m_yencCipherMeta = *m_tagContent;
+		Util::Trim(m_yencCipherMeta);
 	}
 
 	m_currentElement.clear();

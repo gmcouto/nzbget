@@ -23,20 +23,19 @@
 #include "Decoder.h"
 #include "YEncoder.h"
 #include "YEncDecryptor.h"
+#include "YEncTestHelpers.h"
 #include <sodium.h>
 #include <iomanip>
 #include <sstream>
+
+// Shared test helpers : one hex/yEnc helper set for all NNTP test TUs.
+using namespace YEncTest;
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
 
 std::string yEncEncode(const std::string& data)
 {
-	std::string encodedData = "";
-	for (unsigned char c : data)
-	{
-		encodedData += static_cast<unsigned char>((c + 42) % 256);
-	}
-	return encodedData;
+	return YEncTest::SimpleYencEncode(data);
 }
 
 /**
@@ -276,35 +275,24 @@ BOOST_AUTO_TEST_CASE(BufferOverflowTest)
 	BOOST_CHECK_EQUAL(decoder.GetEof(), false);
 }
 
-static std::vector<uint8_t> HexToBytesHelper(const std::string& hex)
-{
-	std::vector<uint8_t> bytes;
-	for (size_t i = 0; i < hex.length(); i += 2)
-	{
-		unsigned int byteVal = 0;
-		sscanf(hex.c_str() + i, "%02x", &byteVal);
-		bytes.push_back(static_cast<uint8_t>(byteVal));
-	}
-	return bytes;
-}
-
 BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 {
-	// Vector from body_encryption.json: body-vec-01-spec-example
+	// Vector from body_encryption.json: body-vec-01-spec-example (AAD-bound tag)
 	// password: "test123", salt: "1a2b3c4d5e6f7890abcdef1234567890", segmentIndex: 1
+	// AAD subject: name=test.dat, partNumber=1, partBegin=1, segmentBytes=16
 	// plaintext: "Hello World.txt\xff" (16 bytes)
 	// ciphertext: 6a0d1eb225f844920540fa382ff68874
-	// tag: 0cd77ce245a654463f90b945b1d22d5b
+	// tag: a85856949ac1c3f44794f8d008fcdb13
 	std::string password = "test123";
-	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
-	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
-	std::vector<uint8_t> tag = HexToBytesHelper("0cd77ce245a654463f90b945b1d22d5b");
-	std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> tag = YEncTest::HexToBin("a85856949ac1c3f44794f8d008fcdb13");
+	std::vector<uint8_t> expectedPlaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
 	uint32_t segmentIndex = 1;
 
 	// Build raw wire article:
 	// line 1: =ybegin line=128 size=16 name=test.dat
-	// line 2: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b
+	// line 2: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13
 	// line 3: <yenc encoded ct>
 	// line 4: =yend size=16 crc32=...
 	// line 5: .
@@ -316,7 +304,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 		segmentIndex, 1, true, salt.data(), wireLine1
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
@@ -377,16 +365,16 @@ BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 {
 	std::string password = "test123";
-	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
-	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
-	std::vector<uint8_t> tag = HexToBytesHelper("0cd77ce245a654463f90b945b1d22d5b");
-	std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> tag = YEncTest::HexToBin("bff5c02c40c8354b566da12441d1bcb5");
+	std::vector<uint8_t> expectedPlaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
 	uint32_t segmentIndex = 1;
 
 	// Multipart lines:
 	// line 1: =ybegin part=1 total=2 line=128 size=32 name=multi.dat
 	// line 2: =ypart begin=1 end=16
-	// line 3: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b
+	// line 3: =yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=bff5c02c40c8354b566da12441d1bcb5
 	// line 4: <yenc encoded ct>
 	// line 5: =yend size=16 part=1 pcrc32=...
 	// line 6: .
@@ -405,7 +393,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 		segmentIndex, 2, false, salt.data(), wireLine2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line3Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::string line3Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=bff5c02c40c8354b566da12441d1bcb5";
 	std::vector<uint8_t> wireLine3;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line3Plain.data()), line3Plain.size(),
@@ -468,9 +456,9 @@ BOOST_AUTO_TEST_CASE(EncryptedWireMultipartTest)
 BOOST_AUTO_TEST_CASE(DecoderDualBootstrapMismatchFailsClosedTest)
 {
 	std::string password = "test123";
-	std::vector<uint8_t> salt1 = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
-	std::vector<uint8_t> salt2 = HexToBytesHelper("ffffffffffffffffffffffffffffffff");
-	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> salt1 = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> salt2 = YEncTest::HexToBin("ffffffffffffffffffffffffffffffff");
+	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
 	uint32_t segmentIndex = 1;
 
 	YEncDecryptor encDec(password);
@@ -482,7 +470,7 @@ BOOST_AUTO_TEST_CASE(DecoderDualBootstrapMismatchFailsClosedTest)
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
 	// Header has mismatched salt (salt2 instead of salt1)
-	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=ffffffffffffffffffffffffffffffff index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b";
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=ffffffffffffffffffffffffffffffff index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
@@ -529,7 +517,7 @@ BOOST_AUTO_TEST_CASE(DecoderDualBootstrapMismatchFailsClosedTest)
 BOOST_AUTO_TEST_CASE(EncryptedWireBufferOverflowTest)
 {
 	std::string password = "overflow_test_password";
-	std::vector<uint8_t> salt1 = HexToBytesHelper("0123456789abcdef0123456789abcdef");
+	std::vector<uint8_t> salt1 = YEncTest::HexToBin("0123456789abcdef0123456789abcdef");
 	uint32_t segmentIndex = 1;
 
 	YEncDecryptor encDec(password);
@@ -575,9 +563,9 @@ BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
 	// a stale index from a previous decode would corrupt dual-bootstrap
 	// agreement for the next article.
 	const std::string password = "test123";
-	const std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
-	const std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
-	const std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
+	const std::vector<uint8_t> expectedPlaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
 
 	auto buildWire = [&](uint32_t segmentIndex) -> std::string
 	{
@@ -593,7 +581,7 @@ BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
 		snprintf(indexHex, sizeof(indexHex), "%08x", segmentIndex);
 		std::string line2Plain = std::string(
 			"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=") +
-			indexHex + " tag=0cd77ce245a654463f90b945b1d22d5b";
+			indexHex + " tag=a85856949ac1c3f44794f8d008fcdb13";
 		std::vector<uint8_t> wireLine2;
 		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 			reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
@@ -660,14 +648,14 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	// Body tag/ciphertext from body_encryption.json vector body-vec-01 (index 1 nonce);
 	// decrypted body yields expectedPlaintext.
 	const uint32_t segmentIndex = 1;
-	const std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	const std::vector<uint8_t> expectedPlaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
 	YEncDecryptor encDec(password);
 
 	// Force a Line 1 whose first wire byte is '.' (0x2E) via Line 1 plaintext
 	// beginning with '=ybegin' won't work; instead verify unstuffing of a data
 	// line beginning with '.' inside the encrypted block, and verify a stuffed
 	// terminator is not misread.
-	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
 	std::vector<uint8_t> wireLine1;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
@@ -676,7 +664,7 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
 	std::string line2Plain = std::string(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b");
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13");
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
@@ -686,7 +674,7 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	// Data line: on the wire a line whose content starts with '.' MUST be
 	// dot-stuffed by the producer (RFC 3977 §3.1.1). The consumer's unstuffing
 	// owner must strip the escape dot before yEnc decode / bootstrap extraction.
-	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
 	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
 	BOOST_REQUIRE_EQUAL((int)(uint8_t)wireLine3[0], 0x94); // canonical vector body line
 
@@ -749,10 +737,10 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 	// single-chunk decode.
 	const std::string password = "test123";
 	const uint32_t segmentIndex = 1;
-	const std::vector<uint8_t> expectedPlaintext = HexToBytesHelper("48656c6c6f20576f726c642e747874ff");
+	const std::vector<uint8_t> expectedPlaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
 	YEncDecryptor encDec(password);
 
-	std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
 	std::vector<uint8_t> wireLine1;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
@@ -761,14 +749,14 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
 	std::string line2Plain = std::string(
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b");
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13");
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
 		segmentIndex, 2, false, salt.data(), wireLine2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::vector<uint8_t> ct = HexToBytesHelper("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
 	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
 
 	std::string line4Plain = "=yend size=16";
@@ -860,7 +848,7 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 {
 	const std::string password = "test123";
 	const uint32_t segmentIndex = 1;
-	const std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	YEncDecryptor encDec(password);
 	BOOST_REQUIRE(encDec.EnsureMasterKey(salt.data()));
 
@@ -870,12 +858,16 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 	// Brute-force a 16-byte plaintext whose XChaCha20-Poly1305 ciphertext
 	// (first 16 bytes, tag excluded) starts with the yEnc wire byte(s) we
 	// want on the restored data line: '.' => ct byte 0x04; '..' => 0x04 0x04.
+	// The AEAD uses the Section 2.1 AAD (name=dot.dat, single part, 16 bytes)
+	// exactly as the decoder computes it at authentication time.
 	auto encryptPt = [&](const std::vector<uint8_t>& pt) -> std::vector<uint8_t>
 	{
+		std::vector<uint8_t> aad = YEncDecryptor::BuildAad("dot.dat", 1, 1, 16);
 		std::vector<uint8_t> out(pt.size() + 16);
 		unsigned long long outLen = 0;
 		BOOST_REQUIRE(crypto_aead_xchacha20poly1305_ietf_encrypt(
-			out.data(), &outLen, pt.data(), pt.size(), nullptr, 0, nullptr, nonce,
+			out.data(), &outLen, pt.data(), pt.size(),
+			aad.data(), aad.size(), nullptr, nonce,
 			encDec.GetCachedMasterKey().data()) == 0);
 		out.resize(outLen);
 		return out;
@@ -1018,12 +1010,15 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 // not dsArticleIncomplete.
 BOOST_AUTO_TEST_CASE(TruncatedEncryptedArticleReportsAuthFailedTest)
 {
+	// Combined-only reception : an encrypted job whose Line 1 arrives as
+	// plaintext =ybegin (body-only/unencrypted framing) is an unexpected fetched
+	// mode — provider corruption. The decoder fails closed before any output.
 	Decoder decoder;
-	// Ordinary (non-wire) mode: =ybegin followed by malformed =yencryption
-	// metadata sets m_authFailed; the article is truncated (no =yend).
+	YEncDecryptor decryptor("test123");
+	decoder.SetDecryptor(&decryptor);
 	std::string msg =
 		"=ybegin line=128 size=16 name=test.dat\r\n"
-		"=yencryption cipher=malformed salt=zz index=notahex tag=short\r\n"
+		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13\r\n"
 		"someciphertextthatisneverfollowedbyyend";
 	decoder.DecodeBuffer(msg.data(), static_cast<int>(msg.size()));
 	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
@@ -1063,11 +1058,11 @@ BOOST_AUTO_TEST_CASE(OrdinaryYencLeadingDotTest)
 		BOOST_CHECK_EQUAL(buf.substr(0, len), plainData);
 	}
 
-	// 2. Ordinary unencrypted article when password is set on the decryptor (e.g. from NZB metadata)
+	// 2. Archive password present on an UNENCRYPTED job (decryptor not armed):
+	// ArticleDownloader does not arm the decryptor for ordinary jobs (Body Std v1.2 §8).
 	{
 		Decoder decoder;
-		YEncDecryptor decryptor("somepassword");
-		decoder.SetDecryptor(&decryptor);
+		decoder.SetDecryptor(nullptr);
 		decoder.SetCrcCheck(true);
 		std::string buf = wire;
 		int len = decoder.DecodeBuffer(buf.data(), static_cast<int>(buf.size()));
@@ -1077,13 +1072,25 @@ BOOST_AUTO_TEST_CASE(OrdinaryYencLeadingDotTest)
 		BOOST_CHECK_EQUAL(len, static_cast<int>(plainData.size()));
 		BOOST_CHECK_EQUAL(buf.substr(0, len), plainData);
 	}
+
+	// 3. Encrypted release armed (decryptor active): an unencrypted wire article
+	// arriving with plaintext =ybegin is an unexpected fetched mode (provider corruption)
+	// under combined-only reception . It must fail closed (dsAuthFailed).
+	{
+		Decoder decoder;
+		YEncDecryptor decryptor("somepassword");
+		decoder.SetDecryptor(&decryptor);
+		std::string buf = wire;
+		decoder.DecodeBuffer(buf.data(), static_cast<int>(buf.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+	}
 }
 
 BOOST_AUTO_TEST_CASE(EmbeddedTerminatorNotPrematurelyCompletedTest)
 {
 	const std::string password = "test123";
 	const uint32_t segmentIndex = 1;
-	const std::vector<uint8_t> salt = HexToBytesHelper("1a2b3c4d5e6f7890abcdef1234567890");
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	YEncDecryptor encDec(password);
 
 	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
@@ -1104,6 +1111,86 @@ BOOST_AUTO_TEST_CASE(EmbeddedTerminatorNotPrematurelyCompletedTest)
 
 	// An embedded terminator mid-stream must NOT complete the article prematurely:
 	BOOST_CHECK_EQUAL(decoder.GetEof(), false);
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedWireBadCrcFailClosedTest)
+{
+	// Valid tag, valid ciphertext, but corrupted wire CRC in =yend.
+	// Even with CrcCheck=false (the user configured no CRC check), encrypted
+	// wire mode MUST force CRC verification before AEAD, fail closed with
+	// dsAuthFailed (provider corruption tier), and yield zero output.
+	std::string password = "test123";
+	std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
+	std::vector<uint8_t> tag = YEncTest::HexToBin("a85856949ac1c3f44794f8d008fcdb13");
+	uint32_t segmentIndex = 1;
+
+	YEncDecryptor encDec(password);
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
+
+	// Bad expected wire CRC in =yend (corrupted by provider)
+	std::string line4Plain = "=yend size=16 crc32=deadbeef";
+	std::vector<uint8_t> wireLine4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+		segmentIndex, 4, false, salt.data(), wireLine4
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string fullWire;
+	fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	fullWire.append("\r\n");
+	fullWire.append(wireLine3);
+	fullWire.append("\r\n");
+	fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+	fullWire.append("\r\n.\r\n");
+
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+	decoder.SetCrcCheck(false); // Explicitly disable ordinary CRC check!
+
+	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+
+	// Must fail closed with dsAuthFailed and produce zero plaintext output
+	auto status = decoder.Check();
+	BOOST_CHECK_EQUAL(status, Decoder::dsAuthFailed);
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
+BOOST_AUTO_TEST_CASE(RapidYencDecodeExNonRawEquivalenceTest)
+{
+	// Supported rapidyenc_decode_ex(0, ...) must produce identical output
+	// to non-raw decoding without stripping leading dots (since restored
+	// encrypted wire blocks have already been unstuffed once).
+	std::string payload = "Hello World! ..leading dot line\r\n=another line\r\n";
+	std::string encoded = yEncEncode(payload);
+
+	std::vector<char> dest1(payload.size() + 256, 0);
+	std::vector<char> dest2(payload.size() + 256, 0);
+
+	int state1 = 0;
+	size_t written1 = rapidyenc_decode_ex(0, encoded.data(), dest1.data(), encoded.size(),
+		reinterpret_cast<RapidYencDecoderState*>(&state1));
+
+	// When is_raw=0, rapidyenc does not perform NNTP dot-unstuffing.
+	// Verify written bytes match expected decoded payload:
+	BOOST_CHECK_EQUAL(written1, payload.size());
+	BOOST_CHECK_EQUAL(std::string(dest1.data(), written1), payload);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

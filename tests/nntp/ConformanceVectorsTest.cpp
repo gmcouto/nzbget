@@ -505,18 +505,25 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				BOOST_CHECK(!ok);
 				BOOST_CHECK(clean.empty());
 			}
+			else if (category == "framing")
+			{
+				// yEnc Body Encryption Standard v1.2 Section 5: a body-only
+				// article at a combined-only receiver is provider corruption.
+				BOOST_CHECK_EQUAL(JsonString(vector, "expected_rejection_stage"), "PROVIDER_FAILOVER");
+				BOOST_CHECK(vector.at("provider_failover_permitted").as_bool());
+				YEncDecryptor decryptor("test123");
+				Decoder decoder;
+				decoder.SetDecryptor(&decryptor);
+				std::string wire =
+					"=ybegin line=128 size=1 name=test.dat\r\n"
+					"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=00000000000000000000000000000000\r\n"
+					"F\r\n=yend size=1 crc32=c603b3c2\r\n.\r\n";
+				BOOST_CHECK_EQUAL(decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size())), 0);
+				BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+				CheckZeroOutput(vector, decoder.GetDecryptedData());
+			}
 			else if (category == "metadata_validation")
 			{
-				if (vector.at("id").as_string() == "metadata-04-body-only-vs-combined-only")
-				{
-					// metadata-04 is a body-only article presented to a combined-only receiver.
-					// This is retriable provider corruption (PROVIDER_FAILOVER)
-					// with CONTROL_LINE_DECRYPT_FAILURE because Line 1 has no control-line bootstrap.
-					const bool failoverPermitted = vector.at("provider_failover_permitted").as_bool();
-					BOOST_CHECK(failoverPermitted);
-					continue;
-				}
-
 				// Structural tier: metadata-shaped failures are structural
 				// (METADATA_VALIDATION) — provider failover is NOT permitted and
 				// output must be withheld. Model the queue-time gates:

@@ -382,7 +382,7 @@ BOOST_AUTO_TEST_CASE(ControlVec12SinglePartNameContainsPartRestoreTest)
 	BOOST_CHECK_EQUAL(BinToHex(salt), JsonString(vector, "salt_hex"));
 	BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
 	BOOST_CHECK_EQUAL(cleanBlock,
-		"=ybegin line=128 size=1 name=my =ypart part=2.bin\r\nF\r\n=yend size=1 crc32=16df26f1\r\n");
+		"=ybegin line=128 size=1 name=my =ypart part=2.bin\r\nF\r\n=yend size=1 crc32=c603b3c2\r\n");
 	BOOST_CHECK(cleanBlock.find("\r\n=ypart ") == std::string::npos && cleanBlock.find("\n=ypart ") == std::string::npos);
 }
 

@@ -108,7 +108,7 @@ namespace
 
 BOOST_AUTO_TEST_CASE(ScannerEffectivePasswordGateTest)
 {
-	// NG-4: Scanner::AddFileToQueue resolves ALL password sources (NZB meta,
+	// Scanner::AddFileToQueue resolves ALL password sources (NZB meta,
 	// filename token, caller *Unpack:Password parameters) before the
 	// missing-password validation. These tests drive the real
 	// Scanner::AddFileToQueue (via the test hook) through the

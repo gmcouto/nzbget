@@ -500,7 +500,7 @@ BOOST_AUTO_TEST_CASE(EncryptedProviderFailoverOverRealNntpTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedRawArticleRejectedBeforeRequestTest)
 {
-	// NG-5: RawArticle + encrypted job must be rejected BEFORE the
+	// RawArticle + encrypted job must be rejected BEFORE the
 	// BODY/ARTICLE request — no bytes fetched, nothing committed, raw status
 	// adFatalError (Run() breaks immediately and normalizes to failure).
 	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_rawart_test";
@@ -575,7 +575,7 @@ BOOST_AUTO_TEST_CASE(EncryptedRawArticleRejectedBeforeRequestTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedAllProvidersExhaustedTest)
 {
-	// NG-13 exhaustion leg: BOTH providers serve the corrupted article. The
+	// Exhaustion leg: BOTH providers serve the corrupted article. The
 	// downloader must exhaust all levels/servers and end in failure
 	// (adFailed/adNotFound after Run() normalization), with ZERO bytes
 	// committed to any sink — cache, result file, or final destination.

@@ -491,7 +491,7 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 	// Structural tier: yenc_encrypted release without password meta and
 	// without a filename token must fail with METADATA_VALIDATION — but at
 	// the effective-password gate AFTER the caller-parameter merge
-	// (Scanner::AddFileToQueue / ProcessStandalone, NG-4), because an
+	// (Scanner::AddFileToQueue / ProcessStandalone), because an
 	// API-supplied *Unpack:Password can still satisfy the requirement.
 	// Parse() itself accepts the release; this test pins the parse-level
 	// contract: passwordless metadata still yields a parsable NzbInfo that

@@ -510,7 +510,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 				if (vector.at("id").as_string() == "metadata-04-body-only-vs-combined-only")
 				{
 					// metadata-04 is a body-only article presented to a combined-only receiver.
-					// Per STD-1, this is retriable provider corruption (PROVIDER_FAILOVER)
+					// This is retriable provider corruption (PROVIDER_FAILOVER)
 					// with CONTROL_LINE_DECRYPT_FAILURE because Line 1 has no control-line bootstrap.
 					const bool failoverPermitted = vector.at("provider_failover_permitted").as_bool();
 					BOOST_CHECK(failoverPermitted);
@@ -608,7 +608,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			{
 				if (vector.contains("has_part_on_ybegin"))
 				{
-					// Contradictory framing vectors (STD-13, C-2): verified by standards suite
+					// Contradictory framing vectors: verified by standards suite
 					continue;
 				}
 				// Placement: =yencryption must sit on its canonical physical

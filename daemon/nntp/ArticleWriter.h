@@ -52,10 +52,10 @@ private:
 class ArticleWriter
 {
 public:
-	struct OutputPaths
+	struct OutputPaths 
 	{
-		std::string finalPath;
-		std::string tempPath;
+	    std::string finalPath;
+	    std::string tempPath;
 	};
 	void SetInfoName(const char* infoName) { m_infoName = infoName ? infoName : ""; }
 	void SetInfoName(std::string infoName) { m_infoName = std::move(infoName); }
@@ -72,12 +72,6 @@ public:
 	char* GetCachedData() { return m_articleData.GetData(); }
 #endif
 	bool IsEncryptedRelease() const;
-	void CompleteFileParts();
-	static bool MoveCompletedFiles(NzbInfo* nzbInfo, const char* oldDestDir);
-	void FlushCache();
-
-private:
-	bool GetSkipDiskWrite();
 	void LogStartMessage(std::string_view infoFilename, bool directWrite, bool cached);
 	std::optional<OutputPaths> SetupOutputFile(DiskFile &outfile,
 											std::string_view destDir,
@@ -98,10 +92,16 @@ private:
 						std::string_view nzbDestDir,
 						std::string_view finalOutputPath);
 	void ReportCompletionStatus(std::string_view infoFilename);
-	void HandlePostProcessing(uint32 crc,
-							std::string_view currentPath,
-							std::string_view originalFilename,
+	void HandlePostProcessing(uint32 crc, 
+							std::string_view currentPath, 
+							std::string_view originalFilename, 
 							std::string_view nzbDestDir);
+	void CompleteFileParts();
+	static bool MoveCompletedFiles(NzbInfo* nzbInfo, const char* oldDestDir);
+	void FlushCache();
+
+private:
+	bool GetSkipDiskWrite();
 
 	FileInfo* m_fileInfo;
 	ArticleInfo* m_articleInfo;

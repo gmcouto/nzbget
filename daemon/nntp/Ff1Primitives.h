@@ -38,6 +38,8 @@
 #include <cstddef>
 #include <cmath>
 #include <vector>
+#include <stdexcept>
+#include <new>
 
 namespace Ff1
 {
@@ -62,9 +64,8 @@ inline uint8_t NumeralToByte(uint8_t num)
 	throw std::runtime_error("Numeral out of range [0, 252]");
 }
 
-inline void NumRadix(const std::vector<uint8_t>& numerals, int radix, BIGNUM* outBn, BN_CTX* ctx)
+inline void NumRadix(const std::vector<uint8_t>& numerals, int radix, BIGNUM* outBn)
 {
-	(void)ctx;
 	BN_zero(outBn);
 	for (uint8_t n : numerals)
 	{
@@ -73,9 +74,8 @@ inline void NumRadix(const std::vector<uint8_t>& numerals, int radix, BIGNUM* ou
 	}
 }
 
-inline std::vector<uint8_t> StrRadix(const BIGNUM* inBn, int radix, int m, BN_CTX* ctx)
+inline std::vector<uint8_t> StrRadix(const BIGNUM* inBn, int radix, int m)
 {
-	(void)ctx;
 	std::vector<uint8_t> res(m, 0);
 	BIGNUM* val = BN_dup(inBn);
 	if (!val)
@@ -139,7 +139,7 @@ inline std::vector<uint8_t> RoundPrf(EVP_CIPHER_CTX* aesCtx,
 
 	std::vector<uint8_t> numHalfBytes(b, 0);
 	BIGNUM* numHalf = BN_new();
-	NumRadix(half, radix, numHalf, nullptr);
+	NumRadix(half, radix, numHalf);
 	BN_bn2binpad(numHalf, numHalfBytes.data(), b);
 	BN_free(numHalf);
 

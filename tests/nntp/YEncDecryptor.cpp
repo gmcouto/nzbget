@@ -34,6 +34,8 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <thread>
+#include <atomic>
 
 // Shared test helpers : one hex/yEnc helper set for all NNTP test TUs.
 using namespace YEncTest;
@@ -148,7 +150,6 @@ BOOST_AUTO_TEST_CASE(ParseYEncryptionTest)
 	YEncDecryptor::YEncryptionHeader header;
 
 	BOOST_CHECK(YEncDecryptor::ParseYEncryption(line.c_str(), line.length(), header));
-	BOOST_CHECK_EQUAL(header.cipher, "XChaCha20-Poly1305");
 	BOOST_CHECK_EQUAL(BinToHex(header.salt.data(), header.salt.size()), "1a2b3c4d5e6f7890abcdef1234567890");
 	BOOST_CHECK_EQUAL(BinToHex(header.tag.data(), header.tag.size()), "0cd77ce245a654463f90b945b1d22d5b");
 	BOOST_CHECK_EQUAL(header.segmentIndex, 1U);
@@ -194,7 +195,10 @@ BOOST_AUTO_TEST_CASE(DecoderEncryptedIntegrationTest)
 		1, 2, false, salt.data(), wire2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line4Plain = "=yend size=" + std::to_string(ciphertext.size());
+	std::ostringstream footer;
+	Crc32 wireCrc; wireCrc.Append(ciphertext.data(), ciphertext.size());
+	footer << "=yend size=" << ciphertext.size() << " crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
+	std::string line4Plain = footer.str();
 	std::vector<uint8_t> wire4;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
@@ -256,10 +260,9 @@ BOOST_AUTO_TEST_CASE(YEncryptionGrammarTest)
 	// Valid header
 	std::string validLine = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
 	BOOST_CHECK(YEncDecryptor::ParseYEncryption(validLine.c_str(), validLine.size(), header));
-	BOOST_CHECK_EQUAL(header.cipher, "XChaCha20-Poly1305");
-	BOOST_CHECK_EQUAL(header.saltHex, "1a2b3c4d5e6f7890abcdef1234567890");
-	BOOST_CHECK_EQUAL(header.indexHex, "00000001");
-	BOOST_CHECK_EQUAL(header.tagHex, "0cd77ce245a654463f90b945b1d22d5b");
+	BOOST_CHECK_EQUAL(BinToHex(header.salt.data(), header.salt.size()), "1a2b3c4d5e6f7890abcdef1234567890");
+	BOOST_CHECK_EQUAL(header.segmentIndex, 1U);
+	BOOST_CHECK_EQUAL(BinToHex(header.tag.data(), header.tag.size()), "0cd77ce245a654463f90b945b1d22d5b");
 	BOOST_CHECK_EQUAL(header.segmentIndex, 1U);
 
 	// malformed-header-01-bad-cipher
@@ -745,6 +748,52 @@ BOOST_AUTO_TEST_CASE(JobOwnedKeyCacheSharingTest)
 	uint8_t dummyKey[32];
 	BOOST_CHECK(!jobCache.GetKey(salt1, dummyKey));
 	BOOST_CHECK(!jobCache.GetKey(salt2, dummyKey));
+}
+
+BOOST_AUTO_TEST_CASE(ConcurrentEnsureMasterKeyDerivesOnce)
+{
+	class CountingCache : public YEncKeyCache
+	{
+	public:
+		std::atomic<int> runs{0};
+		bool GetOrDeriveKey(const uint8_t salt[16], const std::string& password,
+			uint8_t key[32], const std::function<bool(uint8_t*)>& derive) override
+		{
+			return YEncKeyCache::GetOrDeriveKey(salt, password, key, [&](uint8_t* output)
+			{
+				++runs;
+				return derive(output);
+			});
+		}
+	} cache;
+	uint8_t salt[16] = {1};
+	std::atomic<int> successes{0};
+	std::vector<std::thread> workers;
+	for (int i = 0; i < 8; ++i)
+	{
+		workers.emplace_back([&]()
+		{
+			YEncDecryptor decryptor("password", &cache);
+			if (decryptor.EnsureMasterKey(salt)) ++successes;
+		});
+	}
+	for (auto& worker : workers) worker.join();
+	BOOST_CHECK_EQUAL(cache.runs, 1);
+	BOOST_CHECK_EQUAL(successes, 8);
+}
+
+BOOST_AUTO_TEST_CASE(PasswordEditAfterQueueUsesNewKey)
+{
+	YEncKeyCache cache;
+	uint8_t salt[16] = {1};
+	YEncDecryptor oldWorker("wrong", &cache);
+	YEncDecryptor newWorker("correct", &cache);
+	YEncDecryptor independent("correct");
+	BOOST_REQUIRE(oldWorker.EnsureMasterKey(salt));
+	BOOST_REQUIRE(newWorker.EnsureMasterKey(salt));
+	BOOST_REQUIRE(independent.EnsureMasterKey(salt));
+	BOOST_CHECK(newWorker.GetCachedMasterKey() != oldWorker.GetCachedMasterKey());
+	BOOST_CHECK(newWorker.GetCachedMasterKey() == independent.GetCachedMasterKey());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

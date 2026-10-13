@@ -26,6 +26,8 @@
 #include "Options.h"
 #include "FileSystem.h"
 #include "Util.h"
+#include "QueueCoordinator.h"
+#include "DiskState.h"
 
 #include <filesystem>
 #include <fstream>
@@ -456,6 +458,73 @@ BOOST_AUTO_TEST_CASE(EncryptedCommitGeometryValidationTest)
 	BOOST_CHECK(ArticleDownloader::ValidCommitGeometry(32, 17, 32, 16));
 
 	g_Options = oldOptions;
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
+{
+	stdfs::path dir = stdfs::temp_directory_path() / "nzbget_encrypted_discard";
+	stdfs::create_directories(dir);
+	Options::CmdOptList opts;
+	opts.push_back("DirectWrite=yes");
+	Options options(&opts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+	for (bool encrypted : {false, true})
+	{
+		NzbInfo nzb;
+		nzb.SetYEncEncrypted(encrypted);
+		FileInfo file;
+		file.SetNzbInfo(&nzb);
+		auto article = std::make_unique<ArticleInfo>();
+		std::string segment = (dir / "segment").string();
+		std::ofstream(segment) << "authenticated segment";
+		article->SetResultFilename(segment.c_str());
+		file.GetArticles()->push_back(std::move(article));
+		QueueCoordinator::DiscardTempFiles(&file);
+		BOOST_CHECK_EQUAL(stdfs::exists(segment), !encrypted);
+	}
+	g_Options = oldOptions;
+	stdfs::remove_all(dir);
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedDirectWriteRestoreKeepsFinishedSegments)
+{
+	stdfs::path dir = stdfs::temp_directory_path() / "nzbget_encrypted_restore";
+	stdfs::create_directories(dir);
+	std::string queueOpt = "QueueDir=" + dir.string();
+	std::string tempOpt = "TempDir=" + dir.string();
+	Options::CmdOptList opts;
+	opts.push_back("DirectWrite=yes");
+	opts.push_back(queueOpt.c_str());
+	opts.push_back(tempOpt.c_str());
+	Options options(&opts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+	for (bool encrypted : {false, true})
+	{
+		NzbInfo nzb;
+		nzb.SetYEncEncrypted(encrypted);
+		FileInfo file;
+		file.SetNzbInfo(&nzb);
+		file.SetFilename("fixture.bin");
+		for (int part = 1; part <= 2; ++part)
+		{
+			auto article = std::make_unique<ArticleInfo>();
+			article->SetPartNumber(part);
+			article->SetStatus(part == 1 ? ArticleInfo::aiFinished : ArticleInfo::aiUndefined);
+			file.GetArticles()->push_back(std::move(article));
+		}
+		DiskState disk;
+		BOOST_REQUIRE(disk.SaveFileState(&file, false));
+		file.GetArticles()->front()->SetStatus(ArticleInfo::aiUndefined);
+		Servers servers;
+		BOOST_REQUIRE(disk.LoadFileState(&file, &servers, false));
+		ArticleInfo* restored = file.GetArticles()->front().get();
+		BOOST_CHECK_EQUAL(restored->GetStatus(), ArticleInfo::aiFinished);
+		BOOST_CHECK_EQUAL(restored->GetResultFilename() != nullptr, encrypted);
+	}
+	g_Options = oldOptions;
+	stdfs::remove_all(dir);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

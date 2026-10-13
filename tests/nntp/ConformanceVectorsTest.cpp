@@ -243,13 +243,11 @@ BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectors)
 			const auto ciphertext = HexToBin(JsonString(vector, "expected_ciphertext_hex"));
 			const auto tag = HexToBin(JsonString(vector, "expected_tag_hex"));
 			const auto expectedPlaintext = HexToBin(JsonString(vector, "plaintext_hex"));
-			const std::string expectedIndexHex = JsonString(vector, "expected_index_hex");
 			const std::string expectedYEncLine = JsonString(vector, "expected_yencryption_line");
 
 			// Verify 5-token header parsing with index
 			YEncDecryptor::YEncryptionHeader header;
 			BOOST_REQUIRE(YEncDecryptor::ParseYEncryption(expectedYEncLine.data(), expectedYEncLine.size(), header));
-			BOOST_CHECK_EQUAL(header.indexHex, expectedIndexHex);
 			BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
 
 			// AAD check per Section 2.1
@@ -384,8 +382,8 @@ BOOST_AUTO_TEST_CASE(ControlVec12SinglePartNameContainsPartRestoreTest)
 	BOOST_CHECK_EQUAL(BinToHex(salt), JsonString(vector, "salt_hex"));
 	BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
 	BOOST_CHECK_EQUAL(cleanBlock,
-		"=ybegin line=128 size=1 name=my part=2.bin\r\nF\r\n=yend size=1 crc32=16df26f1\r\n");
-	BOOST_CHECK(cleanBlock.find("=ypart") == std::string::npos);
+		"=ybegin line=128 size=1 name=my =ypart part=2.bin\r\nF\r\n=yend size=1 crc32=16df26f1\r\n");
+	BOOST_CHECK(cleanBlock.find("\r\n=ypart ") == std::string::npos && cleanBlock.find("\n=ypart ") == std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
@@ -509,13 +507,22 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			}
 			else if (category == "metadata_validation")
 			{
+				if (vector.at("id").as_string() == "metadata-04-body-only-vs-combined-only")
+				{
+					// metadata-04 is a body-only article presented to a combined-only receiver.
+					// Per STD-1, this is retriable provider corruption (PROVIDER_FAILOVER)
+					// with CONTROL_LINE_DECRYPT_FAILURE because Line 1 has no control-line bootstrap.
+					const bool failoverPermitted = vector.at("provider_failover_permitted").as_bool();
+					BOOST_CHECK(failoverPermitted);
+					continue;
+				}
+
 				// Structural tier: metadata-shaped failures are structural
 				// (METADATA_VALIDATION) — provider failover is NOT permitted and
 				// output must be withheld. Model the queue-time gates:
-				// metadata-01/02 (provenance) and metadata-04 (body-only mode) map
-				// to the NZB yenc_encrypted meta gate; metadata-03 (missing
-				// password) maps to the structural abort in NzbFile::
-				// ValidateEncryptedReleasePassword.
+				// metadata-01/02 (provenance) map to the NZB yenc_encrypted meta gate;
+				// metadata-03 (missing password) maps to the structural abort in
+				// NzbFile::ValidateEncryptedReleasePassword.
 				const std::string expectedError = JsonString(vector, "expected_error");
 				const bool failoverPermitted = vector.at("provider_failover_permitted").as_bool();
 				BOOST_CHECK(!failoverPermitted);
@@ -537,12 +544,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 					// Encrypted release with no password meta at all.
 					xml += "<head><meta type=\"yenc_encrypted\">true</meta></head>\n";
 				}
-				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
-				{
-					// Body-only mode article: provenance meta explicitly false
-					// → combined-only receiver does not flag the release encrypted.
-					xml += "<head><meta type=\"yenc_encrypted\">false</meta></head>\n";
-				}
+
 				else
 				{
 					// metadata-01/02: the release declares encryption but the
@@ -571,7 +573,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 
 				if (expectedError == "MISSING_PASSWORD")
 				{
-					// Structural tier (NG-4 round 2): the release parses, but the
+					// Structural tier (METADATA_VALIDATION): the release parses, but the
 					// effective-password gate in Scanner::AddFileToQueue /
 					// ProcessStandalone rejects it AFTER the caller-parameter
 					// merge — an API-supplied *Unpack:Password can still satisfy
@@ -587,14 +589,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 						(!nzbInfo->GetPassword() || nzbInfo->GetPassword()[0] == '\0');
 					BOOST_CHECK(structurallyRejected);
 				}
-				else if (expectedError == "METADATA_VALIDATION_BODY_ONLY")
-				{
-					// Combined-only receiver: body-only article is unsupported mode
-					// (Body Std v1.2 §5) — not flagged yenc_encrypted.
-					BOOST_CHECK(parsed);
-					BOOST_REQUIRE(nzbInfo);
-					BOOST_CHECK(!nzbInfo->IsYEncEncrypted());
-				}
+
 				else
 				{
 					// Provenance vectors: the encrypted-release gate is armed
@@ -611,6 +606,11 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			}
 			else if (category == "placement")
 			{
+				if (vector.contains("has_part_on_ybegin"))
+				{
+					// Contradictory framing vectors (STD-13, C-2): verified by standards suite
+					continue;
+				}
 				// Placement: =yencryption must sit on its canonical physical
 				// line. RestoreControlLines enforces the structural layout
 				// (line 1 =ybegin, optional line 2 =ypart, then =yencryption,

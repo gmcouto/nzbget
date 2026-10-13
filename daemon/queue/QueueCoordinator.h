@@ -49,7 +49,7 @@ public:
 	NzbInfo* AddNzbFileToQueue(std::unique_ptr<NzbInfo> nzbInfo, NzbInfo* urlInfo, bool addFirst);
 	void CheckDupeFileInfos(NzbInfo* nzbInfo);
 	bool HasMoreJobs() const { return m_hasMoreJobs; }
-	void DiscardTempFiles(FileInfo* fileInfo);
+	static void DiscardTempFiles(FileInfo* fileInfo);
 	bool DeleteQueueEntry(DownloadQueue* downloadQueue, FileInfo* fileInfo);
 	bool SetQueueEntryCategory(DownloadQueue* downloadQueue, NzbInfo* nzbInfo, const char* category);
 	bool SetQueueEntryName(DownloadQueue* downloadQueue, NzbInfo* nzbInfo, const char* name);

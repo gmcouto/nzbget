@@ -163,27 +163,20 @@ BOOST_AUTO_TEST_CASE(SystemInfoTest)
 		"\"}," + GetToolsJsonStr(sysInfo->GetTools()) + "," +
 		GetLibrariesJsonStr(sysInfo->GetLibraries()) + "}";
 
-	BOOST_CHECK(jsonStrResult == jsonStrExpected);
-	// Xml::Serialize emits an empty value element as "<string/>" (libxml2
-	// self-closing form). Mirror that in the expectation so the comparison is
-	// environment-independent (CPU Model can legitimately be empty).
-	auto XmlVal = [](const std::string& val) -> std::string
-		{
-			return val.empty() ? "<string/>" : "<string>" + val + "</string>";
-		};
-	std::string xmlStrExpected = "<value><struct><OS><member><name>Name</name><value>" + XmlVal(sysInfo->GetOSInfo().GetName()) +
-		"</value></member>" +
-		"<member><name>Version</name><value>" + XmlVal(sysInfo->GetOSInfo().GetVersion()) +
-		"</value></member></OS>" +
-		"<CPU><member><name>Model</name><value>" + XmlVal(sysInfo->GetCPUInfo().GetModel()) +
-		"</value></member>" +
-		"<member><name>Arch</name><value>" + XmlVal(sysInfo->GetCPUInfo().GetArch()) +
-		"</value></member></CPU>" +
+	std::string xmlStrExpected = "<value><struct><OS><member><name>Name</name><value><string>" + sysInfo->GetOSInfo().GetName() +
+		"</string></value></member>" +
+		"<member><name>Version</name><value><string>" + sysInfo->GetOSInfo().GetVersion() +
+		"</string></value></member></OS>" +
+		"<CPU><member><name>Model</name><value><string>" + sysInfo->GetCPUInfo().GetModel() +
+		"</string></value></member>" +
+		"<member><name>Arch</name><value><string>" + sysInfo->GetCPUInfo().GetArch() +
+		"</string></value></member></CPU>" +
 		GetNetworkXmlStr(network) +
 		GetToolsXmlStr(sysInfo->GetTools()) +
 		GetLibrariesXmlStr(sysInfo->GetLibraries()) +
 		"</struct></value>";
 
+	BOOST_CHECK(jsonStrResult == jsonStrExpected);
 	BOOST_CHECK(xmlStrResult == xmlStrExpected);
 	BOOST_CHECK(!sysInfo->GetOSInfo().GetName().empty());
 	BOOST_CHECK(!sysInfo->GetOSInfo().GetVersion().empty());

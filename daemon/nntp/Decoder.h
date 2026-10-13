@@ -52,7 +52,10 @@ public:
 		efUx,
 	};
 
-	static constexpr size_t kMaxWireBufferSize = 16 * 1024 * 1024; // 16 MB maximum wire buffer
+	// Keep headroom for configurable article sizes and worst-case yEnc escaping
+	// (roughly twice the payload). The 16 MiB wire cap bounds staging to one
+	// article; wire/restored/ciphertext/plaintext copies can total about 64 MiB.
+	static constexpr size_t kMaxWireBufferSize = 16 * 1024 * 1024;
 
 	Decoder();
 	~Decoder();
@@ -65,7 +68,6 @@ public:
 	int64 GetBeginPos() { return m_beginPos; }
 	int64 GetEndPos() { return m_endPos; }
 	int64 GetSize() { return m_size; }
-	int GetPartNumber() const { return m_partNumber; }
 	uint32 GetExpectedCrc() { return m_expectedCRC; }
 	uint32 GetCalculatedCrc() { return m_calculatedCRC; }
 	bool GetEof() { return m_eof; }
@@ -142,7 +144,6 @@ private:
 	bool m_authFailed = false;
 	uint8_t m_salt[16] = {0};
 	uint8_t m_tag[16] = {0};
-	std::string m_cipher;
 	std::vector<uint8_t> m_cipherPayload;
 	std::vector<uint8_t> m_decryptedPlaintext;
 

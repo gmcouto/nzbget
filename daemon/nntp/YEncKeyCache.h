@@ -24,6 +24,8 @@
 #include <cstddef>
 #include <mutex>
 #include <vector>
+#include <string>
+#include <functional>
 
 // Bounded thread-safe job-owned Argon2id master-key cache.
 // Deriving a 64 MiB Argon2id key costs ~15 ms per article; a 1000-article
@@ -40,28 +42,36 @@ public:
 	YEncKeyCache() = default;
 	YEncKeyCache(const YEncKeyCache&) = delete;
 	YEncKeyCache& operator=(const YEncKeyCache&) = delete;
-	~YEncKeyCache();
+	virtual ~YEncKeyCache();
 
 	// Returns true and copies the 32-byte key if the salt is cached.
-	bool GetKey(const uint8_t salt[16], uint8_t outKey[32]);
+	bool GetKey(const uint8_t salt[16], uint8_t outKey[32], const std::string& password = "");
 
 	// Inserts or updates the cached key for the salt; evicts (zeroizing) the
 	// oldest entry when the cache is full.
-	void PutKey(const uint8_t salt[16], const uint8_t key[32]);
+	void PutKey(const uint8_t salt[16], const uint8_t key[32], const std::string& password = "");
+
+	// Single-flight derivation; a password edit cannot reuse the old key.
+	virtual bool GetOrDeriveKey(const uint8_t salt[16], const std::string& password,
+		uint8_t outKey[32], const std::function<bool(uint8_t*)>& derive);
 
 	// Zeroizes and drops all cached keys (password change / job teardown).
 	void Clear();
 
-	size_t Size();
+#ifdef NZBGET_TESTING_HOOKS
+	// Observe cache occupancy without exposing it in production.
+	size_t Size() { std::lock_guard<std::recursive_mutex> lock(m_mutex); return m_entries.size(); }
+#endif
 
 private:
 	struct Entry
 	{
 		uint8_t salt[16] = {0};
 		uint8_t key[32] = {0};
+		uint8_t passwordHash[32] = {0};
 	};
 
-	std::mutex m_mutex;
+	std::recursive_mutex m_mutex;
 	std::vector<Entry> m_entries;
 };
 

@@ -91,14 +91,14 @@ static std::vector<uint8_t> Ff1EncryptNumerals(
 		BIGNUM* bnC = BN_new();
 		BN_CTX* ctx = BN_CTX_new();
 		int m = (i % 2 == 0) ? u : v;
-		Ff1::NumRadix(A, radix, bnNumA, ctx);
+		Ff1::NumRadix(A, radix, bnNumA);
 		BIGNUM* bnRadix = BN_new();
 		BN_set_word(bnRadix, radix);
 		BN_set_word(bnMod, m);
 		BN_exp(bnMod, bnRadix, bnMod, ctx);
 		BN_add(bnC, bnNumA, bnY);
 		BN_nnmod(bnC, bnC, bnMod, ctx);
-		std::vector<uint8_t> C = Ff1::StrRadix(bnC, radix, m, ctx);
+		std::vector<uint8_t> C = Ff1::StrRadix(bnC, radix, m);
 		BN_free(bnY);
 		BN_free(bnNumA);
 		BN_free(bnMod);

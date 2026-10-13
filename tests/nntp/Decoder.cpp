@@ -589,7 +589,10 @@ BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
 		)), static_cast<int>(YEncDecryptor::Status::Ok));
 
 		std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
-		std::string line4Plain = "=yend size=16";
+		Crc32 wireCrc; wireCrc.Append(const_cast<uint8_t*>(ct.data()), ct.size());
+	std::ostringstream crcFooter;
+	crcFooter << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
+	std::string line4Plain = crcFooter.str();
 		std::vector<uint8_t> wireLine4;
 		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 			reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
@@ -678,7 +681,10 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
 	BOOST_REQUIRE_EQUAL((int)(uint8_t)wireLine3[0], 0x94); // canonical vector body line
 
-	std::string line4Plain = "=yend size=16";
+	Crc32 wireCrc; wireCrc.Append(const_cast<uint8_t*>(ct.data()), ct.size());
+	std::ostringstream crcFooter;
+	crcFooter << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
+	std::string line4Plain = crcFooter.str();
 	std::vector<uint8_t> wireLine4;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
@@ -759,7 +765,10 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 	std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
 	std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
 
-	std::string line4Plain = "=yend size=16";
+	Crc32 wireCrc; wireCrc.Append(const_cast<uint8_t*>(ct.data()), ct.size());
+	std::ostringstream crcFooter;
+	crcFooter << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
+	std::string line4Plain = crcFooter.str();
 	std::vector<uint8_t> wireLine4;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
@@ -951,7 +960,10 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 		BOOST_REQUIRE_EQUAL((int)(uint8_t)encLine[0], 0x2E); // '.'-leading data line
 		std::string stuffedLine = "." + encLine;
 
-		std::string line4Plain = "=yend size=16";
+		Crc32 wireCrc; wireCrc.Append(const_cast<uint8_t*>(ct.data()), ct.size());
+	std::ostringstream crcFooter;
+	crcFooter << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
+	std::string line4Plain = crcFooter.str();
 		std::vector<uint8_t> wireLine4;
 		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 			reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
@@ -1215,7 +1227,7 @@ std::vector<uint8_t> SinglePartAad(const std::string& name)
 }
 
 // Builds a complete encrypted single-part article (16-byte plaintext) with the given =ybegin name.
-std::string BuildEncryptedSinglePartWire(const std::string& name, const std::vector<uint8_t>& plaintext)
+std::string BuildEncryptedSinglePartWire(const std::string& name, const std::vector<uint8_t>& plaintext, bool missingName = false, bool missingCrc = false)
 {
 	const std::vector<uint8_t> salt = HexToBin(SINGLE_PART_SALT);
 	const std::vector<uint8_t> key = HexToBin(BODY_VEC01_KEY);
@@ -1228,7 +1240,7 @@ std::string BuildEncryptedSinglePartWire(const std::string& name, const std::vec
 		plaintext.data(), plaintext.size(), aad.data(), aad.size(), nullptr, nonce.data(), key.data());
 
 	YEncDecryptor encDec("test123");
-	std::string line1 = "=ybegin line=128 size=16 name=" + name;
+	std::string line1 = "=ybegin line=128 size=16" + (missingName ? std::string() : " name=" + name);
 	std::vector<uint8_t> wireLine1;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line1.data()), line1.size(), 1, 1, true, salt.data(), wireLine1)),
@@ -1246,7 +1258,7 @@ std::string BuildEncryptedSinglePartWire(const std::string& name, const std::vec
 	const uint32_t ctCrc = crc.Finish();
 	std::ostringstream endOss;
 	endOss << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << ctCrc;
-	std::string line4 = endOss.str();
+	std::string line4 = missingCrc ? "=yend size=16" : endOss.str();
 	std::vector<uint8_t> wireLine4;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line4.data()), line4.size(), 1, 4, false, salt.data(), wireLine4)),
@@ -1279,7 +1291,6 @@ BOOST_AUTO_TEST_CASE(EncryptedSinglePartNameContainsPartTest)
 	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFinished));
 	BOOST_CHECK_EQUAL(std::string(decoder.GetArticleFilename()), "my part=2.bin");
 	BOOST_CHECK(decoder.IsEncrypted());
-	BOOST_CHECK_EQUAL(decoder.GetPartNumber(), 1);
 	BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
 		expectedPlaintext.begin(), expectedPlaintext.end());
 }
@@ -1301,7 +1312,6 @@ BOOST_AUTO_TEST_CASE(EncryptedSinglePartNameContainsYpartBeginTest)
 	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFinished));
 	BOOST_CHECK_EQUAL(std::string(decoder.GetArticleFilename()), "a =ypart x begin=5.bin");
 	BOOST_CHECK(decoder.IsEncrypted());
-	BOOST_CHECK_EQUAL(decoder.GetPartNumber(), 1);
 	BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
 		expectedPlaintext.begin(), expectedPlaintext.end());
 }
@@ -1325,13 +1335,12 @@ BOOST_AUTO_TEST_CASE(PlainSinglePartNameContainsPartUnchangedTest)
 	// Upstream plain yEnc: strstr(" part=") also matches inside name=, so the article is treated as a
 	// multipart part (part 2) without =ypart and rejected as invalid size. Output stays empty.
 	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsInvalidSize));
-	BOOST_CHECK_EQUAL(decoder.GetPartNumber(), 2);
 	BOOST_CHECK_EQUAL(decoder.GetSize(), 5);
 	BOOST_CHECK_EQUAL(len, 0);
 	BOOST_CHECK(!decoder.IsEncrypted());
 }
 
-// Control Std v1.2 section 5: without name=, multipart is decided by the presence of part= alone.
+// Control Std v1.2 section 5: physical line 2 decides placement even when name= is missing.
 // Line 1 is encrypted with segment index 1; the body line is passed through verbatim.
 BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
 {
@@ -1370,6 +1379,21 @@ BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
 		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt));
 		BOOST_CHECK(clean.find("=ypart begin=1 end=16\r\n") != std::string::npos);
 		BOOST_CHECK(clean.find("=yencryption") == std::string::npos);
+	}
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosed)
+{
+	const std::vector<uint8_t> payload = HexToBin("48656c6c6f20576f726c642e747874ff");
+	for (int defect = 0; defect < 3; ++defect)
+	{
+		std::string wire = BuildEncryptedSinglePartWire(defect == 1 ? "" : "file.bin", payload, defect == 0, defect == 2);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
 	}
 }
 

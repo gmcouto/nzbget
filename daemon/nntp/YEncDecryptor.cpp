@@ -127,14 +127,14 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 		BIGNUM* bnC = BN_new();
 		BN_CTX* ctx = BN_CTX_new();
 		int m = (i % 2 == 0) ? u : v;
-		Ff1::NumRadix(B, radix, bnNumB, ctx);
+		Ff1::NumRadix(B, radix, bnNumB);
 		BIGNUM* bnRadix = BN_new();
 		BN_set_word(bnRadix, radix);
 		BN_set_word(bnMod, m);
 		BN_exp(bnMod, bnRadix, bnMod, ctx);
 		BN_sub(bnC, bnNumB, bnY);
 		BN_nnmod(bnC, bnC, bnMod, ctx);
-		std::vector<uint8_t> C = Ff1::StrRadix(bnC, radix, m, ctx);
+		std::vector<uint8_t> C = Ff1::StrRadix(bnC, radix, m);
 		BN_free(bnY);
 		BN_free(bnNumB);
 		BN_free(bnMod);
@@ -224,29 +224,15 @@ bool YEncDecryptor::EnsureMasterKey(const uint8_t salt[16])
 
 	ClearMasterKey();
 
-	// Check job-owned key cache first
-	if (m_keyCache)
-	{
-		uint8_t cachedKey[32];
-		if (m_keyCache->GetKey(salt, cachedKey))
-		{
-			m_cachedSalt.assign(salt, salt + 16);
-			m_cachedMasterKey.assign(cachedKey, cachedKey + 32);
-			sodium_memzero(cachedKey, sizeof(cachedKey));
-			return true;
-		}
-	}
-
 	uint8_t key[32];
-	int res = argon2id_hash_raw(1, 65536, 4, m_password.data(), m_password.size(), salt, 16, key, 32);
-	if (res != ARGON2_OK)
+	auto derive = [&](uint8_t* output)
 	{
+		return argon2id_hash_raw(1, 65536, 4, m_password.data(), m_password.size(), salt, 16, output, 32) == ARGON2_OK;
+	};
+	if (!(m_keyCache ? m_keyCache->GetOrDeriveKey(salt, m_password, key, derive) : derive(key)))
+	{
+		sodium_memzero(key, sizeof(key));
 		return false;
-	}
-
-	if (m_keyCache)
-	{
-		m_keyCache->PutKey(salt, key);
 	}
 
 	m_cachedSalt.assign(salt, salt + 16);
@@ -625,10 +611,6 @@ bool YEncDecryptor::ParseYEncryption(
 		}
 	}
 
-	outHeader.cipher = "XChaCha20-Poly1305";
-	outHeader.saltHex = std::string(saltHex);
-	outHeader.indexHex = std::string(indexHex);
-	outHeader.tagHex = std::string(tagHex);
 	outHeader.salt.resize(16);
 	outHeader.tag.resize(16);
 	outHeader.segmentIndex = parsedIndex;
@@ -653,9 +635,15 @@ bool YEncDecryptor::RestoreControlLines(
 	// PROVIDER_FAILOVER — no FF1 error is ever passed through as a data line.
 	outCleanBlock.clear();
 	outLine1Salt.clear();
+	auto fail = [&]()
+	{
+		outCleanBlock.clear();
+		outLine1Salt.clear();
+		return false;
+	};
 	if (!wireBlock || wireLen == 0)
 	{
-		return false;
+		return fail();
 	}
 
 	struct WireLine
@@ -691,7 +679,7 @@ bool YEncDecryptor::RestoreControlLines(
 	}
 	if (lines.size() < 3)
 	{
-		return false;
+		return fail();
 	}
 
 	std::vector<uint8_t> restored;
@@ -701,37 +689,42 @@ bool YEncDecryptor::RestoreControlLines(
 		restored.size() < 8 || memcmp(restored.data(), "=ybegin ", 8) != 0 ||
 		line1SegmentIndex == 0)
 	{
-		return false;
+		return fail();
 	}
 
 	const std::string begin(restored.begin(), restored.end());
 	outCleanBlock.append(begin).append(lines[0].ending);
-	// Body Std v1.2 section 2.1 / Control Std v1.2 section 5: multipart is decided only by keywords
-	// before name=. name= is the last =ybegin keyword and its value runs to end of line, so a
-	// single-part article named "my part=2.bin" is not multipart.
+	// Control Encryption Standard v1.2 §5: restore physical line 2 first.
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[1].data), lines[1].len,
+		line1SegmentIndex, 2, false, restored) != Status::Ok)
+	{
+		return fail();
+	}
+	const bool multipart = restored.size() >= 7 && memcmp(restored.data(), "=ypart ", 7) == 0;
+	const size_t headerIndex = multipart ? 2 : 1;
 	const size_t nameIndex = begin.find(" name=");
 	const size_t partIndex = begin.find(" part=");
-	const bool multipart = partIndex != std::string::npos && (nameIndex == std::string::npos || partIndex < nameIndex);
-	const size_t headerIndex = multipart ? 2 : 1;
+	const bool hasPart = partIndex != std::string::npos && (nameIndex == std::string::npos || partIndex < nameIndex);
+	if (multipart != hasPart)
+	{
+		return fail();
+	}
 	if (multipart)
 	{
-		if (lines.size() < 4 || DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[1].data), lines[1].len,
-			line1SegmentIndex, 2, false, restored) != Status::Ok || restored.size() < 7 ||
-			memcmp(restored.data(), "=ypart ", 7) != 0)
-		{
-			return false;
-		}
 		outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(lines[1].ending);
+		if (lines.size() < 4 || DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[2].data), lines[2].len,
+			line1SegmentIndex, 3, false, restored) != Status::Ok)
+		{
+			return fail();
+		}
 	}
 
 	YEncryptionHeader header;
-	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[headerIndex].data), lines[headerIndex].len,
-		line1SegmentIndex, static_cast<uint32_t>(headerIndex + 1), false, restored) != Status::Ok ||
-		!ParseYEncryption(reinterpret_cast<const char*>(restored.data()), restored.size(), header))
+	if (!ParseYEncryption(reinterpret_cast<const char*>(restored.data()), restored.size(), header))
 	{
 		outCleanBlock.clear();
 		outLine1Salt.clear();
-		return false;
+		return fail();
 	}
 
 	// Enforce Dual-Bootstrap Agreement
@@ -739,14 +732,14 @@ bool YEncDecryptor::RestoreControlLines(
 	{
 		outCleanBlock.clear();
 		outLine1Salt.clear();
-		return false;
+		return fail();
 	}
 
 	for (size_t i = headerIndex + 1; i + 1 < lines.size(); ++i)
 	{
 		if (lines[i].len >= 13 && memcmp(lines[i].data, "=yencryption ", 13) == 0)
 		{
-			return false;
+			return fail();
 		}
 		outCleanBlock.append(lines[i].data, lines[i].len).append(lines[i].ending);
 	}
@@ -756,7 +749,7 @@ bool YEncDecryptor::RestoreControlLines(
 		line1SegmentIndex, static_cast<uint32_t>(lines.size()), false, restored) != Status::Ok ||
 		restored.size() < 5 || memcmp(restored.data(), "=yend", 5) != 0)
 	{
-		return false;
+		return fail();
 	}
 	outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(lines[footerIndex].ending);
 	if (outHeader)

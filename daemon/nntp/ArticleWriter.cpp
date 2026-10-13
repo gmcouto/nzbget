@@ -384,7 +384,7 @@ void ArticleWriter::BuildOutputFilename()
 	m_articleInfo->SetResultFilename(filename.c_str());
 	m_tempFilename = filename + ".tmp";
 
-	if (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite())
+	if (!m_fileInfo->GetNzbInfo()->IsYEncEncrypted() && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()))
 	{
 		Guard guard = m_fileInfo->GuardOutputFile();
 		const std::string& outputFilename = m_fileInfo->GetOutputFilename();
@@ -1160,7 +1160,7 @@ bool ArticleCache::CheckFlush(bool flushEverything)
 
 			for (FileInfo* fileInfo : nzbInfo->GetFileList())
 			{
-				if (fileInfo->GetCachedArticles() > 0
+				if (fileInfo->GetCachedArticles() > 0 
 					&& (fileInfo->GetActiveDownloads() == 0 || flushEverything)
 					&& (!fileInfo->GetNzbInfo()->GetSkipDiskWrite() || flushEverything))
 				{

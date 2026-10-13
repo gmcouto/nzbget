@@ -93,10 +93,6 @@ public:
 
 	struct YEncryptionHeader
 	{
-		std::string cipher;
-		std::string saltHex;
-		std::string indexHex;
-		std::string tagHex;
 		std::vector<uint8_t> salt;
 		std::vector<uint8_t> tag;
 		uint32_t segmentIndex = 0;
@@ -133,9 +129,7 @@ public:
 		const uint8_t salt[16],
 		std::vector<uint8_t>& outWireData
 	);
-#endif
 
-#ifdef NZBGET_TESTING_HOOKS
 	// Test-only surface: seeds the key cache directly so nonce/tweak vector
 	// tests are deterministic without paying the 64 MiB Argon2id KDF per case.
 	// Never compiled into release builds (define NZBGET_TESTING_HOOKS in the

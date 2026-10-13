@@ -259,11 +259,6 @@ bool NzbFile::ValidateEncryptedReleaseMetadata()
 	// ProcessStandalone gate), because only then are all sources known.
 	if (m_yencEncryptedMeta)
 	{
-		if (m_password.empty())
-		{
-			ReadPasswordFromFilename();
-		}
-
 		// Supplied yenc_version/yenc_cipher must be locally supported
 		// (ordering-independent: both metas are captured during SAX parsing and
 		// validated here, after the whole head was consumed).
@@ -299,7 +294,7 @@ bool NzbFile::ProcessFiles()
 
 	// Version/cipher validation (structural tier) happens at parse time;
 	// the missing-password check moved to the post-merge gate in
-	// Scanner::AddFileToQueue / ProcessStandalone (NG-4).
+	// Scanner::AddFileToQueue / ProcessStandalone.
 	if (!ValidateEncryptedReleaseMetadata())
 	{
 		return false;
@@ -388,7 +383,7 @@ void NzbFile::ReadPasswordFromFilename()
 	if (end == std::string::npos) return;
 
 	if (start < end)
-		m_password = m_fileName.substr(start, end - start);
+	    m_password = m_fileName.substr(start, end - start);
 }
 
 bool NzbFile::Parse()

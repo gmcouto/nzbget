@@ -69,7 +69,6 @@ void Decoder::Clear()
 	// index from a previous article would corrupt this article's key derivation
 	// and bypass dual-bootstrap agreement.
 	m_segmentIndex = 0;
-	m_cipher.clear();
 	memset(m_salt, 0, sizeof(m_salt));
 	memset(m_tag, 0, sizeof(m_tag));
 	m_cipherPayload.clear();
@@ -115,7 +114,6 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 		UnstuffInPlace(buffer, len);
 	}
 
-	bool alreadyBuffered = false;
 
 	// Check if candidate for encrypted wire mode
 	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty())))
@@ -173,7 +171,6 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				{
 					m_encryptedWireMode = true;
 					m_format = efYenc;
-					m_segmentIndex = extractedIndex;
 					int wireLen = static_cast<int>(m_wireBuffer.size());
 					UnstuffInPlace(m_wireBuffer.data(), wireLen);
 					m_wireBuffer.resize(wireLen);
@@ -238,10 +235,7 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 	}
 	else
 	{
-		if (!alreadyBuffered)
-		{
-			m_lineBuf.Append(buffer, len);
-		}
+		m_lineBuf.Append(buffer, len);
 	}
 
 	char* line = (char*)m_lineBuf;
@@ -549,7 +543,6 @@ void Decoder::ParseEncryption(const char* buffer, int len)
 	}
 	else
 	{
-		m_cipher = header.cipher;
 		memcpy(m_salt, header.salt.data(), 16);
 		memcpy(m_tag, header.tag.data(), 16);
 		m_segmentIndex = header.segmentIndex;
@@ -692,7 +685,6 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 
 	m_segmentIndex = header.segmentIndex;
 	m_encrypted = true;
-	m_cipher = header.cipher;
 	memcpy(m_salt, header.salt.data(), 16);
 	memcpy(m_tag, header.tag.data(), 16);
 
@@ -766,6 +758,12 @@ Decoder::EStatus Decoder::CheckYenc()
 	{
 		return dsAuthFailed;
 	}
+	else if (m_encrypted && (m_size >= (int64(1) << 32) || m_beginPos >= (int64(1) << 32) || m_endPos >= (int64(1) << 32)))
+	{
+		m_authFailed = true;
+		m_decryptedPlaintext.clear();
+		return dsAuthFailed;
+	}
 	else if (!m_begin)
 	{
 		return dsNoBinaryData;
@@ -777,6 +775,12 @@ Decoder::EStatus Decoder::CheckYenc()
 	else if ((!m_part && m_size != m_endSize) || (m_endSize != m_outSize))
 	{
 		return dsInvalidSize;
+	}
+	else if (m_encrypted && !m_crc)
+	{
+		m_authFailed = true;
+		m_decryptedPlaintext.clear();
+		return dsAuthFailed;
 	}
 	else if ((m_crcCheck || m_encrypted) && m_crc && (m_expectedCRC != m_calculatedCRC))
 	{

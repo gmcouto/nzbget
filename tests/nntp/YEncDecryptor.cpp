@@ -83,6 +83,34 @@ BOOST_AUTO_TEST_CASE(DeriveBodyNonceTest)
 	BOOST_CHECK_EQUAL(BinToHex(nonce2, 24), "2dad96a23a557711eaeb8d010d23f897524ad90d3c73914f");
 }
 
+BOOST_AUTO_TEST_CASE(DerivationFailsClosedWithoutMasterKey)
+{
+	// NG-2: derivation must fail closed before any HMAC/copy work when no
+	// master key is cached, leaving the output buffers untouched. The deeper
+	// HMAC-failure branch (HMAC() returning nullptr) cannot be triggered
+	// without a production hook; it is covered by static review: the return
+	// pointer and mdLen are checked and md is zeroized on every exit.
+	YEncDecryptor decryptor("test123"); // EnsureMasterKey never called
+	uint8_t nonce[24];
+	memset(nonce, 0xAB, sizeof(nonce));
+	BOOST_CHECK(!decryptor.DeriveBodyNonce(1, nonce));
+	uint8_t expectedNonce[24];
+	memset(expectedNonce, 0xAB, sizeof(expectedNonce));
+	BOOST_CHECK_EQUAL_COLLECTIONS(nonce, nonce + 24, expectedNonce, expectedNonce + 24);
+
+	uint8_t key[32];
+	uint8_t tweak[8];
+	memset(key, 0xAB, sizeof(key));
+	memset(tweak, 0xAB, sizeof(tweak));
+	BOOST_CHECK(!decryptor.DeriveControlKeyAndTweak(1, 1, key, tweak));
+	uint8_t expectedKey[32];
+	uint8_t expectedTweak[8];
+	memset(expectedKey, 0xAB, sizeof(expectedKey));
+	memset(expectedTweak, 0xAB, sizeof(expectedTweak));
+	BOOST_CHECK_EQUAL_COLLECTIONS(key, key + 32, expectedKey, expectedKey + 32);
+	BOOST_CHECK_EQUAL_COLLECTIONS(tweak, tweak + 8, expectedTweak, expectedTweak + 8);
+}
+
 BOOST_AUTO_TEST_CASE(AuthenticateAndDecryptTestVector)
 {
 	YEncDecryptor decryptor("test123");

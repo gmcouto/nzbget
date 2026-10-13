@@ -490,6 +490,139 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
 	stdfs::remove_all(dir);
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
+{
+	// NG-4 investigation: on encrypted auth failure both DiscardStagedData and
+	// Finish(false) delete m_tempFilename/m_resultFilename. Ownership check:
+	// the deleted paths are this article's own per-part scratch paths
+	// (<TempDir>/<fileId>.<part>[.tmp]); a sibling article's committed result
+	// file (different part number) and its cached segment must survive, in
+	// disk-staging (cache-full), skip-disk, and direct-write-gated modes.
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_auth_failure_ownership_test";
+	stdfs::remove_all(tempDir);
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	// Force disk staging (no article cache) so the encrypted path uses the
+	// per-article temp file rather than CachedSegmentData.
+	cmdOpts.push_back("ArticleCache=0");
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+
+	// Sibling article (part 1) with a committed result file on disk.
+	std::string siblingSegment = (tempDir / "42.001").string();
+	{
+		std::ofstream ofs(siblingSegment, std::ios::binary);
+		ofs << "authenticated sibling plaintext";
+	}
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("ownership_test.dat");
+	fileInfo.SetId(42);
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(32);
+	articleInfo.SetPartNumber(2);
+
+	ArticleWriter writer;
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("ownership_test_article");
+	writer.Prepare();
+
+	// Own paths are distinct from the sibling's path.
+	BOOST_CHECK_EQUAL(articleInfo.GetResultFilename(), (tempDir / "42.002").string().c_str());
+
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "ownership_test.dat", 32, 0, 32));
+
+	// Unauthenticated ciphertext must never be staged (Write is a no-op).
+	std::vector<char> ciphertext(32, 'X');
+	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
+
+	// Auth failure path 1: DiscardStagedData.
+	writer.DiscardStagedData();
+	BOOST_CHECK(!stdfs::exists(tempDir / "42.002"));
+	BOOST_CHECK(!stdfs::exists(tempDir / "42.002.tmp"));
+	BOOST_CHECK_EQUAL(stdfs::exists(siblingSegment), true);
+	{
+		std::ifstream ifs(siblingSegment, std::ios::binary);
+		std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+		BOOST_CHECK_EQUAL(content, "authenticated sibling plaintext");
+	}
+
+	// Auth failure path 2: the subsequent Finish(false) from Download().
+	writer.Finish(false);
+	BOOST_CHECK(!stdfs::exists(tempDir / "42.002"));
+	BOOST_CHECK(!stdfs::exists(tempDir / "42.002.tmp"));
+	BOOST_CHECK_EQUAL(stdfs::exists(siblingSegment), true);
+	{
+		std::ifstream ifs(siblingSegment, std::ios::binary);
+		std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+		BOOST_CHECK_EQUAL(content, "authenticated sibling plaintext");
+	}
+
+	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedSkipDiskAuthFailureDeletesNothingTest)
+{
+	// Skip-disk mode must keep the deletion guard in DiscardStagedData and
+	// Finish(false): nothing on disk exists, nothing is touched.
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_skipdisk_auth_fail_test";
+	stdfs::remove_all(tempDir);
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	cmdOpts.push_back("ArticleCache=0");
+	cmdOpts.push_back("SkipWrite=yes");
+	Options options(&cmdOpts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("skipdisk_test.dat");
+	fileInfo.SetId(7);
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(32);
+	articleInfo.SetPartNumber(1);
+
+	ArticleWriter writer;
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("skipdisk_test_article");
+	writer.Prepare();
+
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "skipdisk_test.dat", 32, 0, 32));
+	std::vector<char> ciphertext(32, 'X');
+	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
+	writer.DiscardStagedData();
+	writer.Finish(false);
+
+	// SkipWrite guard: nothing was created and nothing was deleted.
+	BOOST_CHECK(!stdfs::exists(tempDir / "7.001"));
+	BOOST_CHECK(!stdfs::exists(tempDir / "7.001.tmp"));
+
+	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
+}
+
 BOOST_AUTO_TEST_CASE(EncryptedDirectWriteRestoreKeepsFinishedSegments)
 {
 	stdfs::path dir = stdfs::temp_directory_path() / "nzbget_encrypted_restore";

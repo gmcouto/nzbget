@@ -228,9 +228,19 @@ bool YEncDecryptor::DeriveBodyNonce(uint32_t segmentIndex, uint8_t outNonce[24])
 	msg[17] = static_cast<uint8_t>((segmentIndex >> 8) & 0xFF);
 	msg[18] = static_cast<uint8_t>(segmentIndex & 0xFF);
 
+	// HMAC() returns a pointer to the digest or nullptr on failure (e.g.
+	// allocation/engine error). Copying an uninitialized stack buffer would
+	// leak garbage into the AEAD nonce, so fail closed via the existing
+	// Status::Error mapping instead.
 	unsigned int mdLen = 0;
 	uint8_t md[EVP_MAX_MD_SIZE];
-	HMAC(EVP_sha256(), m_cachedMasterKey.data(), 32, msg, 19, md, &mdLen);
+	sodium_memzero(md, sizeof(md));
+	const unsigned char* hmacResult = HMAC(EVP_sha256(), m_cachedMasterKey.data(), 32, msg, 19, md, &mdLen);
+	if (hmacResult == nullptr || mdLen < 24)
+	{
+		sodium_memzero(md, sizeof(md));
+		return false;
+	}
 	memcpy(outNonce, md, 24);
 	sodium_memzero(md, sizeof(md));
 	return true;
@@ -245,8 +255,15 @@ bool YEncDecryptor::DeriveControlKeyAndTweak(uint32_t segmentIndex, uint32_t lin
 
 	unsigned int mdLen = 0;
 	uint8_t md[EVP_MAX_MD_SIZE];
-	HMAC(EVP_sha256(), m_cachedMasterKey.data(), 32, reinterpret_cast<const unsigned char*>("yenc-control key"), 16, md, &mdLen);
+	sodium_memzero(md, sizeof(md));
+	const unsigned char* hmacKey = HMAC(EVP_sha256(), m_cachedMasterKey.data(), 32, reinterpret_cast<const unsigned char*>("yenc-control key"), 16, md, &mdLen);
+	if (hmacKey == nullptr || mdLen < 32)
+	{
+		sodium_memzero(md, sizeof(md));
+		return false;
+	}
 	memcpy(outKey, md, 32);
+	sodium_memzero(md, sizeof(md));
 
 	uint8_t tweakMsg[26];
 	memcpy(tweakMsg, "yenc-control tweak", 18);
@@ -259,7 +276,12 @@ bool YEncDecryptor::DeriveControlKeyAndTweak(uint32_t segmentIndex, uint32_t lin
 	tweakMsg[24] = static_cast<uint8_t>((lineIndex >> 8) & 0xFF);
 	tweakMsg[25] = static_cast<uint8_t>(lineIndex & 0xFF);
 
-	HMAC(EVP_sha256(), m_cachedMasterKey.data(), 32, tweakMsg, 26, md, &mdLen);
+	const unsigned char* hmacTweak = HMAC(EVP_sha256(), m_cachedMasterKey.data(), 32, tweakMsg, 26, md, &mdLen);
+	if (hmacTweak == nullptr || mdLen < 8)
+	{
+		sodium_memzero(md, sizeof(md));
+		return false;
+	}
 	memcpy(outTweak, md, 8);
 	sodium_memzero(md, sizeof(md));
 	return true;

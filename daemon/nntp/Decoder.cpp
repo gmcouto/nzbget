@@ -580,10 +580,15 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	// exactly once (UnstuffInPlace ran on the raw wire chunks). rapidyenc's
 	// incremental decoder is hardwired isRaw and would strip every line-start
 	// '.' a second time, corrupting restored yEnc data lines beginning with
-	// '.'. For restored blocks, locate the body end ourselves and decode the
-	// body with the non-raw decoder (no unstuffing); the "=yend" line is then
-	// processed by the ordinary line loop. Ordinary articles keep the raw
-	// incremental path (rapidyenc owns unstuffing in situ).
+	// '.'. For restored blocks, locate the "=y" footer marker ourselves and
+	// decode the body with the non-raw decoder (no unstuffing); the "=yend"
+	// line is then processed by the ordinary line loop. The restored block
+	// contains no transport dot line: the article terminator was consumed on
+	// the raw stream before restoration (TrackWireTerminator), and an interior
+	// "." data line arrives stuffed as ".." and is restored verbatim, so a
+	// dot scan here would truncate valid bodies. Ordinary articles keep the
+	// raw incremental path (rapidyenc owns unstuffing in situ, including the
+	// raw "\r\n.\r\n" EOF detection).
 	if (m_encryptedWireMode)
 	{
 		size_t bodyLen = len;
@@ -595,18 +600,13 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 		}
 		else
 		{
+			// No dot-terminator scan: the restored block holds no transport
+			// dot line (see comment above); only "=y" ends the body here.
 			for (size_t i = 0; i < (size_t)len; i++)
 			{
 				if (buffer[i] == '\n')
 				{
 					if (i + 2 < (size_t)len && buffer[i + 1] == '=' && buffer[i + 2] == 'y')
-					{
-						bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
-						markerOffset = i + 1;
-						break;
-					}
-					if (i + 3 < (size_t)len && buffer[i + 1] == '.' &&
-						(buffer[i + 2] == '\n' || (buffer[i + 2] == '\r' && i + 4 < (size_t)len && buffer[i + 3] == '\n')))
 					{
 						bodyLen = (i > 0 && buffer[i - 1] == '\r') ? i - 1 : i;
 						markerOffset = i + 1;

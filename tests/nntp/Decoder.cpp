@@ -1445,4 +1445,180 @@ BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosed)
 	}
 }
 
+// Body Std v1.2 / NG-1 investigation: an encrypted restored block whose
+// yEnc body contains an interior data line consisting of a single '.' (sent
+// dot-stuffed as '..' per RFC 3977 §3.1.1) followed by more data lines must
+// decode in full. DecodeYenc's wire-mode scan for the transport terminator
+// must not fire here, because ProcessRestoredBlock feeds an already-unstuffed
+// block back through DecodeBuffer while m_encryptedWireMode is still set.
+BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockInteriorDotLineTest)
+{
+	const std::string password = "test123";
+	const uint32_t segmentIndex = 1;
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	YEncDecryptor encDec(password);
+	BOOST_REQUIRE(encDec.EnsureMasterKey(salt.data()));
+
+	uint8_t nonce[24];
+	BOOST_REQUIRE(encDec.DeriveBodyNonce(segmentIndex, nonce));
+
+	// The full ciphertext: line1 = "A"*40 (so its yEnc wire form does not
+	// begin with '.'), line2 = "." (wire '.', i.e. transported as '..'),
+	// line3 = "B"*40, then CRLF.
+	std::vector<uint8_t> pt;
+	pt.insert(pt.end(), 40, 'A');
+	pt.push_back('.');
+	pt.insert(pt.end(), 40, 'B');
+	pt.push_back('\r');
+	pt.push_back('\n');
+
+	const std::string name = "interiordot.dat";
+	std::vector<uint8_t> aad = YEncDecryptor::BuildAad(name, 1, 1, pt.size());
+	std::vector<uint8_t> ct(pt.size() + 16);
+	std::vector<uint8_t> tag(16);
+	unsigned long long outLen = 0;
+
+	// Brute-force pt[40] so the ciphertext byte at index 40 is 0x04: its
+	// yEnc wire form is then a bare '.' (0x2E), which we can carve out as an
+	// interior data line consisting of exactly one dot. XChaCha20 is a stream
+	// cipher, so pt[40] only affects ct[40].
+	BOOST_REQUIRE_EQUAL((int)pt[40], (int)'.');
+	for (unsigned a = 0; a < 256; ++a)
+	{
+		pt[40] = (uint8_t)a;
+		BOOST_REQUIRE(crypto_aead_xchacha20poly1305_ietf_encrypt_detached(
+			ct.data(), tag.data(), nullptr, pt.data(), pt.size(),
+			aad.data(), aad.size(), nullptr, nonce, encDec.GetCachedMasterKey().data()) == 0);
+		if (ct[40] == 0x04)
+		{
+			break;
+		}
+	}
+	BOOST_REQUIRE_EQUAL((int)ct[40], 0x04);
+	BOOST_REQUIRE_NE((int)ct[41], 0x13); // ct[40]'s wire byte must not be '='-escaped
+	ct.resize(pt.size());
+
+	// Encrypt the control lines (Body Std v1.2 / Control Std v1.2 §5).
+	auto encryptLine = [&](const std::string& text, uint32_t lineIndex, bool line1)
+	{
+		std::vector<uint8_t> out;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(text.data()), text.size(),
+			segmentIndex, lineIndex, line1, salt.data(), out)),
+			static_cast<int>(YEncDecryptor::Status::Ok));
+		return std::string(out.begin(), out.end());
+	};
+
+	const std::string wireLine1 = encryptLine(
+		"=ybegin line=128 size=" + std::to_string(pt.size()) + " name=" + name, 1, true);
+	char saltHex[33], tagHex[33];
+	for (int i = 0; i < 16; ++i)
+	{
+		snprintf(saltHex + 2 * i, 3, "%02x", salt[i]);
+		snprintf(tagHex + 2 * i, 3, "%02x", tag[i]);
+	}
+	const std::string wireLine2 = encryptLine(
+		std::string("=yencryption cipher=XChaCha20-Poly1305 salt=") + saltHex +
+			" index=00000001 tag=" + tagHex,
+		2, false);
+
+	// yEnc-encode the ciphertext with full escaping, then split the encoded
+	// body at ct[40]'s wire byte so the middle physical line is exactly ".".
+	BOOST_REQUIRE_NE((int)(uint8_t)ct[0], 0x04); // first wire line must not begin with '.'
+	std::string enc;
+	size_t dotPos = std::string::npos;
+	for (size_t i = 0; i < ct.size(); ++i)
+	{
+		uint8_t e = (uint8_t)((ct[i] + 42) % 256);
+		if (e == 0x00 || e == 0x0A || e == 0x0D || e == 0x3D)
+		{
+			enc += '=';
+			e = (uint8_t)((e + 64) % 256);
+		}
+		if (i == 40)
+		{
+			BOOST_REQUIRE_EQUAL((int)(uint8_t)e, 0x2E);
+			dotPos = enc.size();
+		}
+		enc += (char)e;
+	}
+	BOOST_REQUIRE_NE(dotPos, std::string::npos);
+	std::string body = enc.substr(0, dotPos) + "\r\n.\r\n" + enc.substr(dotPos + 1) + "\r\n";
+
+	Crc32 ctCrc;
+	ctCrc.Append(ct.data(), ct.size());
+	std::ostringstream endOss;
+	endOss << "=yend size=" << pt.size() << " crc32=" << std::hex << std::setw(8) << std::setfill('0') << ctCrc.Finish();
+	// RestoreControlLines decrypts the footer with lineIndex = lines.size():
+	// 6 physical lines (ybegin, yencryption, bodyA, ".", bodyB, yend).
+	const std::string wireLine4 = encryptLine(endOss.str(), 6, false);
+
+	auto buildWire = [&]()
+	{
+		// Wire transport form: the interior "." data line is dot-stuffed to
+		// ".." per RFC 3977 §3.1.1 (the consumer's single unstuffing pass
+		// restores it to "." inside the accumulated raw block).
+		std::string wire;
+		wire.append(wireLine1).append("\r\n");
+		wire.append(wireLine2).append("\r\n");
+		wire.append(enc.substr(0, dotPos)).append("\r\n..\r\n").append(enc.substr(dotPos + 1)).append("\r\n");
+		wire.append(wireLine4).append("\r\n.\r\n");
+		return wire;
+	};
+
+	std::string wire = buildWire();
+
+	// Control: the identical article without the interior dot line (whole
+	// encoded body as one data line) must decode fine, proving the fixture
+	// and CRC are sound and the failure is caused solely by the interior
+	// dot line. Its footer carries lineIndex 4 (4 content lines).
+	{
+		const std::string wireLine4c = encryptLine(endOss.str(), 4, false);
+		std::string wireControl;
+		wireControl.append(wireLine1).append("\r\n");
+		wireControl.append(wireLine2).append("\r\n");
+		wireControl.append(enc).append("\r\n");
+		wireControl.append(wireLine4c).append("\r\n.\r\n");
+		YEncDecryptor decryptor2(password);
+		Decoder decoder2;
+		decoder2.SetDecryptor(&decryptor2);
+		decoder2.SetCrcCheck(true);
+		decoder2.DecodeBuffer(wireControl.data(), static_cast<int>(wireControl.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder2.Check()), static_cast<int>(Decoder::dsFinished));
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			decoder2.GetDecryptedData().begin(), decoder2.GetDecryptedData().end(),
+			pt.begin(), pt.end());
+	}
+
+	// Chunked feeding (byte-at-a-time across the stuffed '..') must behave
+	// identically to the single-shot feed.
+	{
+		YEncDecryptor decryptor3(password);
+		Decoder decoder3;
+		decoder3.SetDecryptor(&decryptor3);
+		decoder3.SetCrcCheck(true);
+		for (size_t i = 0; i < wire.size(); ++i)
+		{
+			decoder3.DecodeBuffer(wire.data() + i, 1);
+		}
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder3.Check()), static_cast<int>(Decoder::dsFinished));
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			decoder3.GetDecryptedData().begin(), decoder3.GetDecryptedData().end(),
+			pt.begin(), pt.end());
+	}
+
+	YEncDecryptor decryptor(password);
+	Decoder decoder;
+	decoder.SetDecryptor(&decryptor);
+	decoder.SetCrcCheck(true);
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFinished));
+	BOOST_CHECK(decoder.IsEncrypted());
+	BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), segmentIndex);
+	BOOST_CHECK_EQUAL_COLLECTIONS(
+		decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+		pt.begin(), pt.end());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

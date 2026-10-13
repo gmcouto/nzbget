@@ -38,8 +38,6 @@ Decoder::Decoder()
 	Clear();
 }
 
-Decoder::~Decoder() = default;
-
 void Decoder::Clear()
 {
 	m_format = efUnknown;
@@ -76,6 +74,8 @@ void Decoder::Clear()
 	m_encryptedWireMode = false;
 	m_wireProcessed = false;
 	m_wireBuffer.clear();
+	m_rawTail = "\r\n";
+	m_wireTerminated = false;
 	m_unstuffAtLineStart = true;
 	m_unstuffPendingDot = false;
 }
@@ -106,22 +106,28 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 	// unstuffing pass again would corrupt yEnc data lines that legitimately
 	// begin with '.', so such callers pass alreadyUnstuffed=true. Exactly one
 	// unstuffing pass per byte of article, ever.
-	// For ordinary (non-wire) articles, rapidyenc_decode_incremental handles
-	// raw NNTP dot-unstuffing in situ; running UnstuffInPlace here on ordinary
-	// articles caused double-unstuffing and corrupted data lines starting with '.'.
+	// Ordinary (non-wire) articles are not unstuffed here: rapidyenc_decode_incremental
+	// handles raw NNTP dot-unstuffing in situ, and a second pass would corrupt
+	// data lines starting with '.'.
+	const bool wireCandidate = !m_wireProcessed &&
+		(m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty()));
+	if (wireCandidate && !alreadyUnstuffed)
+	{
+		TrackWireTerminator(buffer, len);
+	}
+
 	if (m_encryptedWireMode && !alreadyUnstuffed)
 	{
 		UnstuffInPlace(buffer, len);
 	}
 
-
 	// Check if candidate for encrypted wire mode
-	if (!m_wireProcessed && (m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty())))
+	if (wireCandidate)
 	{
 		// Bound line-1/wire staging to 16 MiB regardless of mode: a
 		// newline-free or oversized stream must fail closed instead of
 		// growing the buffer without limit.
-		if (m_wireBuffer.size() + static_cast<size_t>(len) > kMaxWireBufferSize)
+		if (m_wireBuffer.size() + static_cast<size_t>(len) > MAX_WIRE_BUFFER_SIZE)
 		{
 			m_authFailed = true;
 			m_wireBuffer.clear();
@@ -134,8 +140,7 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 
 		if (!m_encryptedWireMode)
 		{
-			size_t searchStart = (m_wireBuffer.size() >= 20 && m_wireBuffer.rfind("=y", 0) != 0) ? 20 : 0;
-			size_t nlPos = m_wireBuffer.find('\n', searchStart);
+			size_t nlPos = m_wireBuffer.find('\n');
 			if (nlPos != std::string::npos)
 			{
 				size_t line1End = nlPos;
@@ -153,6 +158,16 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				if (!candidateLine1.empty() && candidateLine1[0] == '.')
 				{
 					candidateLine1.erase(0, 1);
+				}
+				// Plaintext framing is rejected before key derivation so a
+				// garbage "salt" never costs an Argon2id run.
+				if (candidateLine1.starts_with("=ybegin ") || candidateLine1.starts_with("begin "))
+				{
+					m_authFailed = true;
+					m_wireBuffer.clear();
+					m_wireProcessed = true;
+					m_eof = true;
+					return 0;
 				}
 				std::vector<uint8_t> ptLine1;
 				std::vector<uint8_t> salt1;
@@ -184,32 +199,22 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 					return 0;
 				}
 			}
+		}
 
-			if (m_encryptedWireMode)
+		if (m_encryptedWireMode)
+		{
+			// The terminator was located on the raw bytes, before unstuffing.
+			if (m_wireTerminated)
 			{
-				bool complete =
-					// Whole-buffer terminator (".\r\n" or ".\n")
-					m_wireBuffer == ".\r\n" || m_wireBuffer == ".\n" ||
-					// Suffix terminator check per NNTP wire framing
-					m_wireBuffer.ends_with("\r\n.\r\n") ||
-					m_wireBuffer.ends_with("\n.\n") ||
-					m_wireBuffer.ends_with("\n.\r\n");
-
-				if (complete)
-				{
-					ProcessRestoredBlock(m_wireBuffer);
-					m_wireProcessed = true;
-					m_eof = true;
-				}
-
-				return 0;
-			}
-			else
-			{
-				// Line 1 is still being accumulated in m_wireBuffer
-				return 0;
+				ProcessRestoredBlock(m_wireBuffer);
+				m_wireProcessed = true;
+				m_eof = true;
 			}
 		}
+
+		// Either the wire block is still being accumulated in m_wireBuffer
+		// or line 1 has not arrived yet.
+		return 0;
 	}
 
 	int outlen = 0;
@@ -300,6 +305,22 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 	}
 
 	return outlen;
+}
+
+void Decoder::TrackWireTerminator(const char* buffer, int len)
+{
+	// RFC 3977 section 3.1.1: the article ends with a line holding a single
+	// dot. In the raw stream a data line that is a single dot is always sent
+	// stuffed (".."), so an unstuffed ".\r\n" line cannot be data.
+	m_rawTail.append(buffer, len);
+	if (m_rawTail.ends_with("\r\n.\r\n") || m_rawTail.ends_with("\n.\n") || m_rawTail.ends_with("\n.\r\n"))
+	{
+		m_wireTerminated = true;
+	}
+	if (m_rawTail.size() > 4)
+	{
+		m_rawTail.erase(0, m_rawTail.size() - 4);
+	}
 }
 
 void Decoder::UnstuffInPlace(char* buffer, int& len)
@@ -461,7 +482,7 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			pb += 6;
 			m_size = static_cast<int64>(atoll(pb));
 		}
-
+		
 		char* partPtr = strstr(buffer, " part=");
 		// Ensure marker is within the current buffer's length
 		if (partPtr && partPtr >= buffer + len) partPtr = nullptr;
@@ -515,7 +536,7 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			pb += crcOffset;
 			m_expectedCRC = static_cast<uint32>(strtoul(pb, nullptr, 16));
 		}
-
+		
 		pb = strstr(buffer, " size=");
 		if (pb && pb + 6 < buffer + len)
 		{
@@ -638,7 +659,7 @@ int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
 	//   0: no end sequence found
 	//   1: \r\n=y sequence found, src points to byte after 'y'
 	//   2: \r\n.\r\n sequence found, src points to byte after last '\n'
-	if (endseq != 0)
+	if (endseq != 0) 
 	{
 		// switch back to line mode to process '=yend'- or eof- marker
 		m_lineBuf.SetLength(0);
@@ -735,7 +756,7 @@ Decoder::EStatus Decoder::Check()
 	{
 		case efYenc:
 			return CheckYenc();
-
+			 
 		case efUx:
 			return CheckUx();
 

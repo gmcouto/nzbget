@@ -469,6 +469,9 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
 	Options options(&opts, nullptr);
 	Options* oldOptions = g_Options;
 	g_Options = &options;
+	// DiscardTempFiles is a member function. As in the Scanner tests, keep one
+	// never-destroyed coordinator instead of re-pointing the globals per test.
+	static QueueCoordinator* coordinator = new QueueCoordinator();
 	for (bool encrypted : {false, true})
 	{
 		NzbInfo nzb;
@@ -480,7 +483,7 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
 		std::ofstream(segment) << "authenticated segment";
 		article->SetResultFilename(segment.c_str());
 		file.GetArticles()->push_back(std::move(article));
-		QueueCoordinator::DiscardTempFiles(&file);
+		coordinator->DiscardTempFiles(&file);
 		BOOST_CHECK_EQUAL(stdfs::exists(segment), !encrypted);
 	}
 	g_Options = oldOptions;

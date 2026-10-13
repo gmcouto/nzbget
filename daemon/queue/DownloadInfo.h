@@ -625,6 +625,9 @@ public:
 		NzbParameter* param = m_ppParameters.Find("*Unpack:Password");
 		return (param && param->GetValue() && param->GetValue()[0] != '\0') ? param->GetValue() : "";
 	}
+	// Stored as a pp-parameter so it persists in DiskState unchanged. Clearing it
+	// fails closed: without the flag the decryptor is not enabled, so encrypted
+	// articles are rejected (no =ybegin) instead of ciphertext being written.
 	bool IsYEncEncrypted()
 	{
 		NzbParameter* param = m_ppParameters.Find("*Unpack:YEncEncrypted");

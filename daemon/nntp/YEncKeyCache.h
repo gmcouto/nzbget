@@ -37,7 +37,7 @@ class YEncKeyCache
 {
 public:
 	// Maximum salts cached per job; a job typically has exactly one salt.
-	static constexpr size_t kMaxCachedSalts = 16;
+	static constexpr size_t MAX_CACHED_SALTS = 16;
 
 	YEncKeyCache() = default;
 	YEncKeyCache(const YEncKeyCache&) = delete;

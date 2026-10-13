@@ -58,7 +58,7 @@ void YEncKeyCache::PutKey(const uint8_t salt[16], const uint8_t key[32], const s
 		}
 	}
 
-	if (m_entries.size() >= kMaxCachedSalts)
+	if (m_entries.size() >= MAX_CACHED_SALTS)
 	{
 		// Evict the oldest entry, zeroizing its key material
 		sodium_memzero(m_entries.front().key, 32);

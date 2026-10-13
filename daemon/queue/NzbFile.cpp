@@ -277,11 +277,6 @@ bool NzbFile::ValidateEncryptedReleaseMetadata()
 				FileSystem::BaseFileName(m_fileName.c_str()), m_yencCipherMeta.c_str()));
 			return false;
 		}
-
-		// The missing-password check happens after the Scanner/standalone
-		// parameter merge (see Scanner::AddFileToQueue / ProcessStandalone).
-		// A release with neither meta nor filename password still parses; it is
-		// rejected there unless an API parameter supplied *Unpack:Password.
 	}
 	return true;
 }
@@ -292,9 +287,8 @@ bool NzbFile::ProcessFiles()
 	// the NZB contributes the yenc_encrypted gate and the password.
 	m_nzbInfo->SetYEncEncrypted(m_yencEncryptedMeta);
 
-	// Version/cipher validation (structural tier) happens at parse time;
-	// the missing-password check moved to the post-merge gate in
-	// Scanner::AddFileToQueue / ProcessStandalone.
+	// Version/cipher validation happens at parse time; the missing-password
+	// check is done by Scanner::AddFileToQueue / ProcessStandalone.
 	if (!ValidateEncryptedReleaseMetadata())
 	{
 		return false;
@@ -345,9 +339,6 @@ bool NzbFile::ProcessFiles()
 	if (m_password.empty())
 	{
 		ReadPasswordFromFilename();
-		// Keep the resolved effective password available to Scanner / standalone
-		// mode (GetPassword) so the *Unpack:Password parameter is set from every
-		// supported source, not only from <meta type="password">.
 	}
 
 	m_metaName = FileSystem::SanitizePathSegment(m_metaName);

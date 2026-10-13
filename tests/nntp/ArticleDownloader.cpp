@@ -433,6 +433,12 @@ void RunEncryptedFailoverScenario(const char* filename, bool directWrite, int ar
 	// The downloader must succeed (valid article fetched from backup provider)
 	BOOST_CHECK_EQUAL(static_cast<int>(downloader.GetStatus()), static_cast<int>(ArticleDownloader::adFinished));
 
+	// The article CRC is the CRC of the authenticated plaintext (not the
+	// ciphertext), so PAR2 quick verification can use it.
+	Crc32 plaintextCrc;
+	plaintextCrc.Append(const_cast<uint8_t*>(plaintext.data()), static_cast<uint32>(plaintext.size()));
+	BOOST_CHECK_EQUAL((*fileInfo.GetArticles())[0]->GetCrc(), plaintextCrc.Finish());
+
 	// The committed segment must be the authenticated plaintext (from backup),
 	// never the corrupted primary's bytes. With ArticleCache=0 the plaintext is
 	// written to the per-article result file; with a cache allocation it lands

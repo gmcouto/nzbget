@@ -602,10 +602,9 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				return adNotFound;
 			}
 
-			// Downstream CRC normalization (Body Std v1.2 §9): never persist the ciphertext CRC into a
-			// verification path (ParChecker combines it → false quick-check
-			// mismatches). Skip SetCrc for encrypted segments so ParChecker
-			// recomputes fresh over authenticated plaintext.
+			// Downstream CRC normalization (Body Std v1.2 §9): the ciphertext CRC
+			// must never be persisted; encrypted segments record the CRC of the
+			// authenticated plaintext below, so PAR2 quick verification matches.
 			if (m_decoder.GetFormat() == Decoder::efYenc && !m_decoder.IsEncrypted())
 			{
 				m_articleInfo->SetCrc(g_Options->GetCrcCheck() ?
@@ -651,6 +650,11 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				{
 					return adFatalError;
 				}
+
+				Crc32 plaintextCrc;
+				plaintextCrc.Append(const_cast<uchar*>(m_decoder.GetDecryptedData().data()),
+					static_cast<uint32>(m_decoder.GetDecryptedData().size()));
+				m_articleInfo->SetCrc(plaintextCrc.Finish());
 			}
 
 			return adFinished;

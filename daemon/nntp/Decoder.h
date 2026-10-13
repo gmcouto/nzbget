@@ -24,7 +24,6 @@
 
 #include <string>
 #include <vector>
-#include <memory>
 #include <cstdint>
 #include "NString.h"
 #include "Util.h"
@@ -55,10 +54,9 @@ public:
 	// Keep headroom for configurable article sizes and worst-case yEnc escaping
 	// (roughly twice the payload). The 16 MiB wire cap bounds staging to one
 	// article; wire/restored/ciphertext/plaintext copies can total about 64 MiB.
-	static constexpr size_t kMaxWireBufferSize = 16 * 1024 * 1024;
+	static constexpr size_t MAX_WIRE_BUFFER_SIZE = 16 * 1024 * 1024;
 
 	Decoder();
-	~Decoder();
 	EStatus Check();
 	void Clear();
 	int DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed = false);
@@ -151,6 +149,13 @@ private:
 	bool m_wireProcessed = false;
 	std::string m_wireBuffer;
 
+	// Last raw (still dot-stuffed) wire bytes, used to find the end-of-article
+	// marker before unstuffing: a stuffed data line ".." that ends a chunk
+	// becomes "." after unstuffing and would look like the terminator.
+	// Starts as a line break so a terminator at the very start is recognized.
+	std::string m_rawTail = "\r\n";
+	bool m_wireTerminated = false;
+
 	// RFC 3977 §3.1.1 dot-unstuffing state. The connection layer
 	// delivers raw socket bytes (single unstuffing owner: this decoder, before
 	// any line splitting or bootstrap extraction).
@@ -158,6 +163,7 @@ private:
 	bool m_unstuffPendingDot = false;
 
 	void UnstuffInPlace(char* buffer, int& len);
+	void TrackWireTerminator(const char* buffer, int len);
 	void ProcessRestoredBlock(const std::string& wireBlock);
 	EFormat DetectFormat(const char* buffer, int len);
 	void ProcessYenc(char* buffer, int len);

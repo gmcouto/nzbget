@@ -23,6 +23,7 @@
 #include "Decoder.h"
 #include "YEncoder.h"
 #include "YEncDecryptor.h"
+#include "YEncKeyCache.h"
 #include "YEncTestHelpers.h"
 #include <sodium.h>
 #include <iomanip>
@@ -846,6 +847,53 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
 		BOOST_CHECK_EQUAL_COLLECTIONS(
 			chunked.GetDecryptedData().begin(), chunked.GetDecryptedData().end(),
 			expectedPlaintext.begin(), expectedPlaintext.end());
+	}
+}
+
+// A stuffed data line ".." that ends a chunk becomes "." after unstuffing; it
+// must not be taken for the article terminator.
+BOOST_AUTO_TEST_CASE(StuffedDotLineAtChunkEndIsNotTerminatorTest)
+{
+	YEncDecryptor encDec("test123");
+	std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		1, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string chunk;
+	chunk.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	chunk.append("\r\nline2\r\n..\r\n");
+
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+	decoder.DecodeBuffer(chunk.data(), static_cast<int>(chunk.size()));
+	BOOST_CHECK(!decoder.GetEof());
+
+	// The real terminator, split from its preceding CRLF, still ends the article.
+	std::string terminator = ".\r\n";
+	decoder.DecodeBuffer(terminator.data(), static_cast<int>(terminator.size()));
+	BOOST_CHECK(decoder.GetEof());
+}
+
+// Plaintext framing on line 1 of an encrypted job fails before any key
+// derivation (no Argon2id run, nothing cached).
+BOOST_AUTO_TEST_CASE(PlaintextLine1RejectedBeforeKeyDerivationTest)
+{
+	YEncKeyCache keyCache;
+	YEncDecryptor encDec("test123", &keyCache);
+	for (const char* article : {
+		"=ybegin line=128 size=4 name=test.dat\r\n=yend size=4\r\n.\r\n",
+		"begin 644 test.dat\r\nend\r\n.\r\n" })
+	{
+		Decoder decoder;
+		decoder.SetDecryptor(&encDec);
+		std::string wire = article;
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+		BOOST_CHECK_EQUAL(keyCache.Size(), 0u);
 	}
 }
 

@@ -53,31 +53,6 @@ struct EvpCipherCtxDeleter
 };
 using ScopedEvpCipherCtx = std::unique_ptr<EVP_CIPHER_CTX, EvpCipherCtxDeleter>;
 
-struct BnCtxDeleter
-{
-	void operator()(BN_CTX* ctx) const
-	{
-		if (ctx)
-		{
-			BN_CTX_end(ctx);
-			BN_CTX_free(ctx);
-		}
-	}
-};
-using ScopedBnCtx = std::unique_ptr<BN_CTX, BnCtxDeleter>;
-
-struct BignumDeleter
-{
-	void operator()(BIGNUM* bn) const
-	{
-		if (bn)
-		{
-			BN_free(bn);
-		}
-	}
-};
-using ScopedBignum = std::unique_ptr<BIGNUM, BignumDeleter>;
-
 static bool IsStrictLowerHex(const char* s, size_t len)
 {
 	for (size_t i = 0; i < len; ++i)
@@ -112,41 +87,39 @@ static std::vector<uint8_t> Ff1DecryptNumerals(
 	int u = n / 2;
 	int v = n - u;
 
-	std::vector<uint8_t> A(numerals.begin(), numerals.begin() + u);
-	std::vector<uint8_t> B(numerals.begin() + u, numerals.end());
+	std::vector<uint8_t> a(numerals.begin(), numerals.begin() + u);
+	std::vector<uint8_t> b(numerals.begin() + u, numerals.end());
 
 	for (int roundIdx = 0; roundIdx < 10; ++roundIdx)
 	{
 		int i = 9 - roundIdx;
-		std::vector<uint8_t> S = Ff1::RoundPrf(aesCtx.get(), radix, n, t, u, v,
-			tweak, A, i);
-		int d = static_cast<int>(S.size());
-		BIGNUM* bnY = BN_bin2bn(S.data(), d, nullptr);
-		BIGNUM* bnNumB = BN_new();
-		BIGNUM* bnMod = BN_new();
-		BIGNUM* bnC = BN_new();
-		BN_CTX* ctx = BN_CTX_new();
+		std::vector<uint8_t> s = Ff1::RoundPrf(aesCtx.get(), radix, n, t, u, v,
+			tweak, a, i);
+		int d = static_cast<int>(s.size());
+		Ff1::ScopedBignum bnY(BN_bin2bn(s.data(), d, nullptr));
+		Ff1::ScopedBignum bnNumB(BN_new());
+		Ff1::ScopedBignum bnMod(BN_new());
+		Ff1::ScopedBignum bnC(BN_new());
+		Ff1::ScopedBignum bnRadix(BN_new());
+		Ff1::ScopedBnCtx ctx(BN_CTX_new());
+		if (!bnY || !bnNumB || !bnMod || !bnC || !bnRadix || !ctx)
+		{
+			throw std::bad_alloc();
+		}
 		int m = (i % 2 == 0) ? u : v;
-		Ff1::NumRadix(B, radix, bnNumB);
-		BIGNUM* bnRadix = BN_new();
-		BN_set_word(bnRadix, radix);
-		BN_set_word(bnMod, m);
-		BN_exp(bnMod, bnRadix, bnMod, ctx);
-		BN_sub(bnC, bnNumB, bnY);
-		BN_nnmod(bnC, bnC, bnMod, ctx);
-		std::vector<uint8_t> C = Ff1::StrRadix(bnC, radix, m);
-		BN_free(bnY);
-		BN_free(bnNumB);
-		BN_free(bnMod);
-		BN_free(bnC);
-		BN_free(bnRadix);
-		BN_CTX_free(ctx);
-		B = A;
-		A = C;
+		Ff1::NumRadix(b, radix, bnNumB.get());
+		BN_set_word(bnRadix.get(), radix);
+		BN_set_word(bnMod.get(), m);
+		BN_exp(bnMod.get(), bnRadix.get(), bnMod.get(), ctx.get());
+		BN_sub(bnC.get(), bnNumB.get(), bnY.get());
+		BN_nnmod(bnC.get(), bnC.get(), bnMod.get(), ctx.get());
+		std::vector<uint8_t> c = Ff1::StrRadix(bnC.get(), radix, m);
+		b = a;
+		a = c;
 	}
 
-	std::vector<uint8_t> result = A;
-	result.insert(result.end(), B.begin(), B.end());
+	std::vector<uint8_t> result = a;
+	result.insert(result.end(), b.begin(), b.end());
 	return result;
 }
 
@@ -657,8 +630,7 @@ bool YEncDecryptor::RestoreControlLines(
 	const char* end = wireBlock + wireLen;
 	while (cursor < end)
 	{
-		const char* searchStart = (lines.empty() && (end - cursor >= 20) && memcmp(cursor, "=y", 2) != 0) ? cursor + 20 : cursor;
-		const char* newline = static_cast<const char*>(memchr(searchStart, '\n', end - searchStart));
+		const char* newline = static_cast<const char*>(memchr(cursor, '\n', end - cursor));
 		const char* lineEnd = newline ? newline : end;
 		const bool crlf = lineEnd > cursor && lineEnd[-1] == '\r';
 		lines.push_back({cursor, static_cast<size_t>((crlf ? lineEnd - 1 : lineEnd) - cursor),

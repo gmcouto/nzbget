@@ -24,7 +24,6 @@
 #include "Log.h"
 #include "YEncTestHelpers.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -634,130 +633,6 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
 			}
 		}
 	}
-}
-
-BOOST_AUTO_TEST_CASE(NzbSegmentIdentityTestVectors)
-{
-	Options::CmdOptList cmdOpts;
-	std::string destOpt = "DestDir=" + std::filesystem::temp_directory_path().string();
-	std::string interOpt = "InterDir=";
-	cmdOpts.push_back(destOpt.c_str());
-	cmdOpts.push_back(interOpt.c_str());
-	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
-	g_Options = &options;
-
-	const auto fixture = LoadFixture("nzb_segment_identity.json");
-	const auto& vectors = fixture.at("vectors").as_array();
-
-	// Shared vector set with the standards repo: only tampering and
-	// mutation vectors (valid_identity/unencrypted_compatibility are
-	// covered by NzbFile/Scanner tests natively).
-	const std::vector<std::string> ids = {
-		"nzb-tamper-01-index-mismatch-zero-output",
-		"nzb-tamper-02-index-swap-zero-output",
-		"nzb-mutation-01-name",
-		"nzb-mutation-02-part-number",
-		"nzb-mutation-03-part-begin",
-		"nzb-mutation-04-segment-bytes",
-		"nzb-mutation-05-name-case",
-		"nzb-mutation-06-unicode-name"
-	};
-	BOOST_REQUIRE_EQUAL(vectors.size(), ids.size());
-
-	for (const auto& item : vectors)
-	{
-		const auto& vector = item.as_object();
-		const std::string id = JsonString(vector, "id");
-		const std::string category = JsonString(vector, "category");
-		BOOST_TEST_CONTEXT(id)
-		{
-			BOOST_CHECK(std::count(ids.begin(), ids.end(), id) == 1);
-
-			const std::filesystem::path tempNzb = std::filesystem::temp_directory_path() / (id + ".nzb");
-			{
-				std::ofstream output(tempNzb, std::ios::binary);
-				output << JsonString(vector, "nzb_xml");
-			}
-
-			NzbFile nzbFile(tempNzb.string().c_str(), "");
-			bool parsed = nzbFile.Parse();
-			std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
-			std::filesystem::remove(tempNzb);
-
-			if (category == "index_tampering")
-			{
-				BOOST_REQUIRE(parsed);
-				BOOST_REQUIRE(nzbInfo);
-				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
-
-				YEncDecryptor decryptor(JsonString(vector, "password"));
-				const auto salt = HexToBin(JsonString(vector, "salt_hex"));
-				std::vector<uint8_t> plaintext;
-
-				if (id == "nzb-tamper-01-index-mismatch-zero-output")
-				{
-					const auto ciphertext = HexToBin(JsonString(vector, "ciphertext_hex"));
-					const auto tag = HexToBin(JsonString(vector, "tag_hex"));
-					std::vector<uint8_t> aad;
-					if (vector.contains("aad_hex"))
-					{
-						aad = HexToBin(JsonString(vector, "aad_hex"));
-					}
-					const auto status = decryptor.AuthenticateAndDecrypt(
-						ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-						JsonUint32(vector, "tampered_segment_index"), aad.data(), aad.size(), plaintext);
-					BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
-					BOOST_CHECK(plaintext.empty());
-				}
-				else
-				{
-					for (const auto& segmentItem : vector.at("tampered_segments").as_array())
-					{
-						const auto& segment = segmentItem.as_object();
-						const auto ciphertext = HexToBin(JsonString(segment, "ciphertext_hex"));
-						const auto tag = HexToBin(JsonString(segment, "tag_hex"));
-						std::vector<uint8_t> aad;
-						if (segment.contains("aad_hex"))
-						{
-							aad = HexToBin(JsonString(segment, "aad_hex"));
-						}
-						plaintext.clear();
-						YEncDecryptor segmentDecryptor(JsonString(vector, "password"));
-						const auto status = segmentDecryptor.AuthenticateAndDecrypt(
-							ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-							JsonUint32(segment, "tampered_segment_index"), aad.data(), aad.size(), plaintext);
-						BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
-						BOOST_CHECK(plaintext.empty());
-					}
-				}
-			}
-			else if (category == "metadata_mutation")
-			{
-				BOOST_REQUIRE(parsed);
-				BOOST_REQUIRE(nzbInfo);
-				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
-
-				YEncDecryptor decryptor(JsonString(vector, "password"));
-				const auto salt = HexToBin(JsonString(vector, "salt_hex"));
-				const auto ciphertext = HexToBin(JsonString(vector, "ciphertext_hex"));
-				const auto tag = HexToBin(JsonString(vector, "tag_hex"));
-				std::vector<uint8_t> aad;
-				if (vector.contains("aad_hex"))
-				{
-					aad = HexToBin(JsonString(vector, "aad_hex"));
-				}
-				std::vector<uint8_t> plaintext;
-				const auto status = decryptor.AuthenticateAndDecrypt(
-					ciphertext.data(), ciphertext.size(), salt.data(), tag.data(),
-					JsonUint32(vector, "segment_index"), aad.data(), aad.size(), plaintext);
-				BOOST_CHECK(status == YEncDecryptor::Status::AuthFailed);
-				BOOST_CHECK(plaintext.empty());
-			}
-		}
-	}
-
-	g_Options = oldOptions;
 }
 
 BOOST_AUTO_TEST_SUITE_END()

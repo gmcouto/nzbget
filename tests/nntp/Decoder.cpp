@@ -1366,6 +1366,111 @@ std::string BuildEncryptedSinglePartWire(const std::string& name, const std::vec
 	return wire;
 }
 
+// Body Std v1.2 section 5 (CRC token grammar): builds the same valid encrypted
+// single-part article as BuildEncryptedSinglePartWire, but the restored =yend
+// crc32 token is supplied verbatim so tests can exercise the token grammar
+// while ciphertext, tag and AAD stay valid.
+std::string BuildEncryptedSinglePartWireWithCrcToken(const std::string& crcToken, const std::vector<uint8_t>& plaintext)
+{
+	const std::vector<uint8_t> salt = HexToBin(SINGLE_PART_SALT);
+	const std::vector<uint8_t> key = HexToBin(BODY_VEC01_KEY);
+	const std::vector<uint8_t> nonce = HexToBin(BODY_VEC01_NONCE);
+	const std::vector<uint8_t> aad = SinglePartAad("test.dat");
+
+	std::vector<uint8_t> ct(plaintext.size());
+	std::vector<uint8_t> tag(crypto_aead_xchacha20poly1305_ietf_ABYTES);
+	crypto_aead_xchacha20poly1305_ietf_encrypt_detached(ct.data(), tag.data(), nullptr,
+		plaintext.data(), plaintext.size(), aad.data(), aad.size(), nullptr, nonce.data(), key.data());
+
+	YEncDecryptor encDec("test123");
+	std::string line1 = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1.data()), line1.size(), 1, 1, true, salt.data(), wireLine1)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2 = std::string("=yencryption cipher=XChaCha20-Poly1305 salt=") + SINGLE_PART_SALT +
+		" index=00000001 tag=" + BinToHex(tag);
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2.data()), line2.size(), 1, 2, false, salt.data(), wireLine2)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line4 = "=yend size=16 crc32=" + crcToken;
+	std::vector<uint8_t> wireLine4;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line4.data()), line4.size(), 1, 4, false, salt.data(), wireLine4)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wire;
+	wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size()).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size()).append("\r\n");
+	wire.append(yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()))).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size()).append("\r\n.\r\n");
+	return wire;
+}
+
+// Body Std v1.2 section 5 (CRC token grammar): builds a valid encrypted
+// multipart part article (part 1 of 2, name multi.dat) whose restored =yend
+// pcrc32 token is supplied verbatim; wholeFileCrcToken, when non-empty,
+// appends a whole-file " crc32=<token>" which receivers must ignore.
+// plaintext defaults to the base fixture payload (ciphertext CRC b3185887);
+// the short-token case passes a payload whose ciphertext CRC is 00294a1c.
+std::string BuildEncryptedMultipartWireWithCrcToken(const std::string& pcrcToken,
+	const std::string& wholeFileCrcToken = "",
+	const std::vector<uint8_t>& pt = HexToBin("48656c6c6f20576f726c642e747874ff"))
+{
+	const std::string name = "multi.dat";
+	const std::vector<uint8_t> salt = HexToBin(SINGLE_PART_SALT);
+	const std::vector<uint8_t> key = HexToBin(BODY_VEC01_KEY);
+	const std::vector<uint8_t> nonce = HexToBin(BODY_VEC01_NONCE);
+	// Part 1, begin 1, 16 segment bytes: the same AAD shape as the single-part builder.
+	const std::vector<uint8_t> aad = SinglePartAad(name);
+
+	std::vector<uint8_t> ct(pt.size());
+	std::vector<uint8_t> tag(crypto_aead_xchacha20poly1305_ietf_ABYTES);
+	crypto_aead_xchacha20poly1305_ietf_encrypt_detached(ct.data(), tag.data(), nullptr,
+		pt.data(), pt.size(), aad.data(), aad.size(), nullptr, nonce.data(), key.data());
+
+	YEncDecryptor encDec("test123");
+	std::string line1 = "=ybegin part=1 total=2 line=128 size=32 name=" + name;
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1.data()), line1.size(), 1, 1, true, salt.data(), wireLine1)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2 = "=ypart begin=1 end=16";
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2.data()), line2.size(), 1, 2, false, salt.data(), wireLine2)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line3 = std::string("=yencryption cipher=XChaCha20-Poly1305 salt=") + SINGLE_PART_SALT +
+		" index=00000001 tag=" + BinToHex(tag);
+	std::vector<uint8_t> wireLine3;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line3.data()), line3.size(), 1, 3, false, salt.data(), wireLine3)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line5 = "=yend size=16 part=1 pcrc32=" + pcrcToken;
+	if (!wholeFileCrcToken.empty())
+	{
+		line5 += " crc32=" + wholeFileCrcToken;
+	}
+	std::vector<uint8_t> wireLine5;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line5.data()), line5.size(), 1, 5, false, salt.data(), wireLine5)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wire;
+	wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size()).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size()).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine3.data()), wireLine3.size()).append("\r\n");
+	wire.append(yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()))).append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine5.data()), wireLine5.size()).append("\r\n.\r\n");
+	return wire;
+}
+
 } // namespace
 
 // Body Std v1.2 section 2.1 / Control Std v1.2 section 5: an encrypted single-part article whose
@@ -1488,6 +1593,171 @@ BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosed)
 		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
 		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
 		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+}
+
+// Body Std v1.2 section 5: the applicable =yend CRC token must be a hex
+// string that parses entirely as a CRC-32 value. A correct hex prefix plus
+// non-hex garbage ("<correct>z") is invalid and must fail under
+// PROVIDER_FAILOVER before AEAD authentication, for both the single-part
+// crc32 token and the multipart pcrc32 token.
+BOOST_AUTO_TEST_CASE(EncryptedCrcTokenTrailingGarbageFailClosedTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	// Correct CRC prefix of the fixture ciphertext is b3185887.
+	for (bool multipart : {false, true})
+	{
+		std::string wire = multipart
+			? BuildEncryptedMultipartWireWithCrcToken("b3185887z")
+			: BuildEncryptedSinglePartWireWithCrcToken("b3185887z", expectedPlaintext);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+}
+
+// Body Std v1.2 section 5: a CRC token larger than 0xffffffff is invalid.
+BOOST_AUTO_TEST_CASE(EncryptedCrcTokenRangeOverflowFailClosedTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	for (bool multipart : {false, true})
+	{
+		// 0x100000000 > 0xffffffff (its low 32 bits would also mismatch).
+		std::string wire = multipart
+			? BuildEncryptedMultipartWireWithCrcToken("100000000")
+			: BuildEncryptedSinglePartWireWithCrcToken("100000000", expectedPlaintext);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+}
+
+// Body Std v1.2 section 5: an empty applicable CRC token is invalid, even
+// when the whole expected value would be zero.
+BOOST_AUTO_TEST_CASE(EncryptedCrcTokenEmptyFailClosedTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	for (bool multipart : {false, true})
+	{
+		std::string wire = multipart
+			? BuildEncryptedMultipartWireWithCrcToken("")
+			: BuildEncryptedSinglePartWireWithCrcToken("", expectedPlaintext);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+}
+
+// Body Std v1.2 section 5: a CRC token is hexadecimal only; '+', '-' and
+// "0x" prefixes accepted by strtoul are invalid.
+BOOST_AUTO_TEST_CASE(EncryptedCrcTokenPrefixesFailClosedTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	for (const std::string& token : {"+b3185887", "-b3185887", "0xb3185887"})
+	{
+		for (bool multipart : {false, true})
+		{
+			std::string wire = multipart
+				? BuildEncryptedMultipartWireWithCrcToken(token)
+				: BuildEncryptedSinglePartWireWithCrcToken(token, expectedPlaintext);
+			YEncDecryptor decryptor("test123");
+			Decoder decoder;
+			decoder.SetDecryptor(&decryptor);
+			decoder.SetCrcCheck(true);
+			decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+			BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+			BOOST_CHECK(decoder.GetDecryptedData().empty());
+		}
+	}
+}
+
+// Body Std v1.2 section 5: a CRC token whose hex prefix matches the correct
+// value plus an overflow digit ("1b3185887" = 0x1b3185887) is invalid; its
+// strtoul-uint32 truncation must not silently compare equal to the CRC.
+BOOST_AUTO_TEST_CASE(EncryptedCrcTokenTruncatingPrefixFailClosedTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	for (bool multipart : {false, true})
+	{
+		std::string wire = multipart
+			? BuildEncryptedMultipartWireWithCrcToken("1b3185887")
+			: BuildEncryptedSinglePartWireWithCrcToken("1b3185887", expectedPlaintext);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+}
+
+// Body Std v1.2 section 5: any-width valid hex is accepted. Mixed case,
+// a canonical short (non zero-padded) token, a zero-padded token and a wide
+// leading-zero token must all still authenticate and decrypt.
+BOOST_AUTO_TEST_CASE(EncryptedCrcTokenValidWidthsAndCaseTest)
+{
+	// Fixture plaintext: its ciphertext CRC32 is b3185887 (uppercase B3185887
+	// valid, zero-padded 00000000b3185887 valid).
+	const std::vector<uint8_t> payload = HexToBin("48656c6c6f20576f726c642e747874ff");
+	// Variant plaintext: its ciphertext CRC32 is 00294a1c, so the canonical
+	// non zero-padded token is the 6-digit "294a1c".
+	const std::vector<uint8_t> shortPayload = HexToBin("48656c6c6f20576f726c642e74780022");
+	for (bool multipart : {false, true})
+	{
+		for (const auto& [token, plaintext] : std::vector<std::pair<std::string, const std::vector<uint8_t>*>>{
+			{"B3185887", &payload},
+			{"b3185887", &payload},
+			{"00000000b3185887", &payload},
+			{"00294a1c", &shortPayload},
+			{"294a1c", &shortPayload},
+			{"000000000000294a1c", &shortPayload}})
+		{
+			std::string wire = multipart
+				? BuildEncryptedMultipartWireWithCrcToken(token, "", *plaintext)
+				: BuildEncryptedSinglePartWireWithCrcToken(token, *plaintext);
+			YEncDecryptor decryptor("test123");
+			Decoder decoder;
+			decoder.SetDecryptor(&decryptor);
+			decoder.SetCrcCheck(true);
+			decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+			BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+			BOOST_CHECK(decoder.IsEncrypted());
+			BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+				plaintext->begin(), plaintext->end());
+		}
+	}
+}
+
+// Body Std v1.2 section 5: a multipart =yend carries only pcrc32; a whole-file
+// crc32, even a malformed one, must stay ignored so the article still decodes.
+BOOST_AUTO_TEST_CASE(EncryptedMultipartWholeFileCrcTokenIgnoredTest)
+{
+	for (const std::string& malformed : {"100000000", "deadbeefz", "+b3185887", ""})
+	{
+		std::string wire = BuildEncryptedMultipartWireWithCrcToken("b3185887", malformed);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+		BOOST_CHECK(decoder.IsEncrypted());
+		const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+		BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+			expectedPlaintext.begin(), expectedPlaintext.end());
 	}
 }
 

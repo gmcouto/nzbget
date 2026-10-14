@@ -646,6 +646,29 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				plaintextCrc.Append(const_cast<uchar*>(m_decoder.GetDecryptedData().data()),
 					static_cast<uint32>(m_decoder.GetDecryptedData().size()));
 				m_articleInfo->SetCrc(plaintextCrc.Finish());
+
+				// DL-2: the encrypted commit path bypasses Write() (the sole
+				// production analyzer feed), so DirectRenamer would otherwise
+				// hash empty input and lose PAR2 classification. Feed the
+				// authenticated plaintext to the attached analyzer exactly once
+				// as a 64-byte header boundary plus body remainder — mirroring
+				// the ordinary chunked-feed pattern RenameContentAnalyzer's
+				// post-header signature check is built for. Failed auth,
+				// geometry, start or commit paths above never reach this line.
+				if (m_contentAnalyzer)
+				{
+					const char* data = reinterpret_cast<const char*>(m_decoder.GetDecryptedData().data());
+					int total = static_cast<int>(m_decoder.GetDecryptedData().size());
+					if (total >= 64)
+					{
+						m_contentAnalyzer->Append(data, 64);
+						m_contentAnalyzer->Append(data + 64, total - 64);
+					}
+					else
+					{
+						m_contentAnalyzer->Append(data, total);
+					}
+				}
 			}
 
 			return adFinished;

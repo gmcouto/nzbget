@@ -33,6 +33,52 @@ static size_t RapidYencDecodeNoUnstuffing(const void* src, void* dest, size_t le
 	return rapidyenc_decode_ex(0, src, dest, len, reinterpret_cast<RapidYencDecoderState*>(state));
 }
 
+// Body Std v1.2 section 5: parse the applicable =yend CRC token for encrypted
+// articles. The token runs to the first ASCII space, tab, CR or LF, or to the
+// end of the bounded buffer; it must contain at least one ASCII hex digit,
+// consume all its bytes (no sign or "0x" prefix, no trailing garbage), keep
+// any width and any number of leading zeros, and not exceed 0xffffffff.
+// Ordinary articles keep the lenient strtoul parsing in ProcessYenc.
+static bool ParseEncryptedCrcToken(const char* token, const char* bufferEnd, uint32_t& value)
+{
+	uint64_t parsed = 0;
+	bool anyDigit = false;
+	while (token < bufferEnd && *token != ' ' && *token != '\t' && *token != '\r' && *token != '\n')
+	{
+		const char c = *token++;
+		int digit;
+		if (c >= '0' && c <= '9')
+		{
+			digit = c - '0';
+		}
+		else if (c >= 'a' && c <= 'f')
+		{
+			digit = c - 'a' + 10;
+		}
+		else if (c >= 'A' && c <= 'F')
+		{
+			digit = c - 'A' + 10;
+		}
+		else
+		{
+			return false;
+		}
+		anyDigit = true;
+		// Checked accumulation: parsed * 16 + digit must stay within UINT32_MAX.
+		if (parsed > (UINT32_MAX - digit) / 16)
+		{
+			return false;
+		}
+		parsed = parsed * 16 + digit;
+	}
+	if (!anyDigit)
+	{
+		return false;
+	}
+	value = static_cast<uint32_t>(parsed);
+	return true;
+}
+
 Decoder::Decoder()
 {
 	Clear();
@@ -544,7 +590,26 @@ void Decoder::ProcessYenc(char* buffer, int len)
 		{
 			m_crc = true;
 			pb += crcOffset;
-			m_expectedCRC = static_cast<uint32>(strtoul(pb, nullptr, 16));
+			// Body Std v1.2 section 5: encrypted articles must validate the
+			// applicable CRC token fully (hex only, entire token consumed,
+			// value <= 0xffffffff) before AEAD authentication. On an invalid
+			// token fail closed as provider corruption without releasing any
+			// plaintext; ordinary articles keep the lenient strtoul parsing.
+			if (m_encrypted)
+			{
+				uint32_t encryptedCrc = 0;
+				if (!ParseEncryptedCrcToken(pb, buffer + len, encryptedCrc))
+				{
+					m_authFailed = true;
+					m_decryptedPlaintext.clear();
+					return;
+				}
+				m_expectedCRC = encryptedCrc;
+			}
+			else
+			{
+				m_expectedCRC = static_cast<uint32>(strtoul(pb, nullptr, 16));
+			}
 		}
 		
 		pb = strstr(buffer, " size=");

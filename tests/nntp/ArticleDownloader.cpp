@@ -30,6 +30,7 @@
 #include "YEncDecryptor.h"
 #include "ArticleWriter.h"
 #include "YEncTestHelpers.h"
+#include "DirectRenamer.h"
 
 #include <string>
 #include <vector>
@@ -50,9 +51,11 @@ namespace stdfs = std::filesystem;
 
 #include <sodium.h>
 
+#ifndef WIN32
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#endif // !WIN32
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
 
@@ -226,6 +229,10 @@ struct DownloaderEnv
 		// silently ran with ArticleCache=0).
 		std::string cacheOpt;
 		std::string rawArticleOpt;
+		// Pin the read-chunk size so the PAR2-leg Append pattern (first chunk,
+		// then remainder) is deterministic across hosts.
+		cmdOpts.push_back("ArticleReadChunkSize=4");
+		cmdOpts.push_back("WriteLog=none");
 		cmdOpts.push_back(tempDirOpt.c_str());
 		if (directWrite)
 		{
@@ -360,6 +367,57 @@ std::string BuildValidEncryptedWireArticle(const std::string& password,
 	return fullWire;
 }
 
+// Builds an ordinary (unencrypted) yEnc wire article for a single-part segment.
+std::string BuildValidOrdinaryYencWireArticle(const std::string& filename,
+	const std::vector<uint8_t>& plaintext)
+{
+	std::string line1 = "=ybegin line=128 size=" + std::to_string(plaintext.size()) + " name=" + filename;
+	std::string encLine;
+	for (uint8_t c : plaintext)
+	{
+		uint8_t e = (uint8_t)((c + 42) % 256);
+		if (e == 0x00 || e == 0x0A || e == 0x0D || e == 0x3D)
+		{
+			encLine += '=';
+			e = (uint8_t)((e + 64) % 256);
+		}
+		encLine += (char)e;
+	}
+	Crc32 crc;
+	crc.Append(const_cast<uint8_t*>(plaintext.data()), static_cast<uint32>(plaintext.size()));
+	std::string line4 = "=yend size=" + std::to_string(plaintext.size()) +
+		" crc32=" + YEncTest::FormatHex8(crc.Finish());
+	return line1 + "\r\n" + encLine + "\r\n" + line4 + "\r\n.\r\n";
+}
+
+// Recording analyzer capturing every Append() so tests can assert exactly
+// which bytes reach the content analyzer (the DirectRenamer feed seam).
+class RecordingContentAnalyzer final : public ArticleContentAnalyzer
+{
+public:
+	void Reset() override
+	{
+		m_recorded.clear();
+		m_resetCount++;
+	}
+
+	void Append(const void* buffer, int len) override
+	{
+		const char* bytes = static_cast<const char*>(buffer);
+		m_recorded.insert(m_recorded.end(), bytes, bytes + len);
+		m_appendCount++;
+	}
+
+	const std::vector<uint8_t>& GetRecorded() const { return m_recorded; }
+	int GetAppendCount() const { return m_appendCount; }
+	int GetResetCount() const { return m_resetCount; }
+
+private:
+	std::vector<uint8_t> m_recorded;
+	int m_appendCount = 0;
+	int m_resetCount = 0;
+};
+
 // Full corrupt-primary → valid-backup scenario over real loopback NNTP.
 // directWrite / articleCache parameterize the writer path under test.
 void RunEncryptedFailoverScenario(const char* filename, bool directWrite, int articleCache)
@@ -424,6 +482,10 @@ void RunEncryptedFailoverScenario(const char* filename, bool directWrite, int ar
 	downloader.SetInfoName("failover_article");
 	downloader.SetConnection(pool.GetConnection(0, nullptr, nullptr));
 
+	auto recordingAnalyzer = std::make_unique<RecordingContentAnalyzer>();
+	RecordingContentAnalyzer* analyzerPtr = recordingAnalyzer.get();
+	downloader.SetContentAnalyzer(std::move(recordingAnalyzer));
+
 	downloader.Run();
 
 	// Both providers must have been contacted (failover happened over real NNTP)
@@ -474,8 +536,184 @@ void RunEncryptedFailoverScenario(const char* filename, bool directWrite, int ar
 		BOOST_CHECK(!stdfs::exists(tempDir / filename));
 	}
 
+	// T05 DL-2 regression: corrupt-primary/valid-backup run must record exactly
+	// the valid plaintext once; the failed corrupt-primary attempt feeds zero bytes.
+	BOOST_CHECK_GE(analyzerPtr->GetAppendCount(), 1);
+	BOOST_REQUIRE_EQUAL(analyzerPtr->GetRecorded().size(), plaintext.size());
+	BOOST_CHECK_EQUAL(memcmp(analyzerPtr->GetRecorded().data(), plaintext.data(), plaintext.size()), 0);
+
 	stdfs::remove_all(tempDir);
 	stdfs::remove_all(tempDirOpt);
+}
+
+// T05 DL-2 native repro result of one PAR2-first-article leg.
+struct Par2FirstArticleResult
+{
+	bool hasHash16k = false;
+	std::string hash16k;
+	bool parFile = false;
+	bool hasParSetId = false;
+	std::string parSetId;
+	size_t fedBytes = 0;
+	bool fedMatchesPlaintext = false;
+};
+
+// DownloadQueue mock for DirectRenamer::ArticleDownloaded (SaveChanged only).
+class Par2RenameDownloadQueueMock final : public DownloadQueue
+{
+public:
+	Par2RenameDownloadQueueMock()
+	{
+		Init(this);
+		Loaded();
+	}
+	~Par2RenameDownloadQueueMock()
+	{
+		Final();
+	}
+	bool EditEntry(int ID, EEditAction action, const char* args) override { return false; }
+	bool EditList(IdList* idList, NameList* nameList, EMatchMode matchMode,
+		EEditAction action, const char* args) override { return false; }
+	void HistoryChanged() override {}
+	void Save() override {}
+	void SaveChanged() override {}
+};
+
+// Minimal concrete DirectRenamer (RenameCompleted is pure virtual).
+class Par2TestDirectRenamer final : public DirectRenamer
+{
+protected:
+	void RenameCompleted(DownloadQueue* downloadQueue, NzbInfo* nzbInfo) override {}
+};
+
+// Runs one PAR2-first-article leg through the real ArticleDownloader plus the
+// real RenameContentAnalyzer/DirectRenamer::ArticleDownloaded path (exactly the
+// QueueCoordinator::StartArticleDownload/ArticleDownloaded wiring) and returns
+// the resulting classification.
+Par2FirstArticleResult RunPar2FirstArticleScenario(const char* filename, bool encrypted,
+	const std::string& password, const std::vector<uint8_t>& salt, uint32_t segmentIndex,
+	const std::vector<uint8_t>& plaintext)
+{
+	std::string tempDir = (stdfs::temp_directory_path() /
+		(encrypted ? "nzbget_par2_enc_test" : "nzbget_par2_plain_test")).string();
+	std::string tempDirOpt = (stdfs::temp_directory_path() /
+		(encrypted ? "nzbget_par2_enc_temp" : "nzbget_par2_plain_temp")).string();
+	stdfs::create_directories(tempDir);
+	stdfs::create_directories(tempDirOpt);
+
+	std::string wire;
+	if (encrypted)
+	{
+		wire = BuildValidEncryptedWireArticle(password, salt, segmentIndex, filename, plaintext);
+	}
+	else
+	{
+		wire = BuildValidOrdinaryYencWireArticle(filename, plaintext);
+	}
+
+	std::atomic<int> requests{0};
+	LocalNntpServer server(wire, &requests);
+
+	ServerPool pool;
+	auto server1 = std::make_unique<NewsServer>(1, true, "primary", "127.0.0.1", server.GetPort(), 0,
+		"", "", false, false, nullptr, 1, 0, 0, 0, false, Options::cvStrict);
+	pool.AddServer(std::move(server1));
+	pool.InitConnections();
+	pool.SetRetryInterval(60);
+
+	DownloaderEnv env(tempDirOpt, false, 0);
+	g_ServerPool = &pool;
+	env.statMeter->Init();
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetId(100);
+	nzbInfo.SetDestDir(tempDir.c_str());
+	nzbInfo.SetName(filename);
+	nzbInfo.SetYEncEncrypted(encrypted);
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", password.c_str());
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetId(101);
+	fileInfo.SetFilename(filename);
+	fileInfo.SetTime(Util::CurrentTime());
+
+	fileInfo.GetArticles()->resize(1);
+	(*fileInfo.GetArticles())[0] = std::make_unique<ArticleInfo>();
+	(*fileInfo.GetArticles())[0]->SetMessageId(encrypted ? "<par2enc-msg@test>" : "<par2plain-msg@test>");
+	(*fileInfo.GetArticles())[0]->SetSize(static_cast<int>(plaintext.size()));
+	(*fileInfo.GetArticles())[0]->SetPartNumber(1);
+
+	ArticleDownloader downloader;
+	downloader.SetFileInfo(&fileInfo);
+	downloader.SetArticleInfo((*fileInfo.GetArticles())[0].get());
+	downloader.SetInfoName("par2_first_article");
+	downloader.SetConnection(pool.GetConnection(0, nullptr, nullptr));
+
+	// Real rename analyzer, exactly like QueueCoordinator::StartArticleDownload.
+	// A recording mirror wraps the real analyzer so the test can assert the
+	// exact fed bytes; the real analyzer still drives ArticleDownloaded.
+	Par2TestDirectRenamer renamer;
+	auto renameAnalyzer = renamer.MakeArticleContentAnalyzer();
+	auto mirrorAnalyzer = std::make_unique<RecordingContentAnalyzer>();
+	RecordingContentAnalyzer* mirrorPtr = mirrorAnalyzer.get();
+	class MirrorAnalyzer final : public ArticleContentAnalyzer
+	{
+	public:
+		MirrorAnalyzer(ArticleContentAnalyzer* real, RecordingContentAnalyzer* mirror) :
+			m_real(real), m_mirror(mirror) {}
+		void Reset() override
+		{
+			m_real->Reset();
+			m_mirror->Reset();
+		}
+		void Append(const void* buffer, int len) override
+		{
+			m_real->Append(buffer, len);
+			m_mirror->Append(buffer, len);
+		}
+	private:
+		ArticleContentAnalyzer* m_real;
+		RecordingContentAnalyzer* m_mirror;
+	};
+	downloader.SetContentAnalyzer(std::make_unique<MirrorAnalyzer>(renameAnalyzer.get(), mirrorPtr));
+
+	downloader.Run();
+
+	BOOST_CHECK_EQUAL(static_cast<int>(downloader.GetStatus()), static_cast<int>(ArticleDownloader::adFinished));
+
+	// The article CRC is the CRC of the authenticated plaintext: equality with
+	// the fixture proves the committed/decrypted bytes are the real content.
+	Crc32 fixtureCrc;
+	fixtureCrc.Append(const_cast<uint8_t*>(plaintext.data()), static_cast<uint32>(plaintext.size()));
+	BOOST_CHECK_EQUAL((*fileInfo.GetArticles())[0]->GetCrc(), fixtureCrc.Finish());
+
+	// Drive the real ArticleDownloaded consumer. DirectRenameStatus is set to
+	// tsFailure so CheckState returns early and never spins up the
+	// DirectParLoader thread against this mock queue: the leg asserts only the
+	// analyzer-driven classification (parFile/setId/hash16k).
+	nzbInfo.SetDirectRenameStatus(NzbInfo::tsFailure);
+	Par2RenameDownloadQueueMock downloadQueue;
+	renamer.ArticleDownloaded(&downloadQueue, &fileInfo,
+		(*fileInfo.GetArticles())[0].get(), renameAnalyzer.get());
+
+	Par2FirstArticleResult out;
+	out.hasHash16k = !Util::EmptyStr(fileInfo.GetHash16k());
+	out.hash16k = out.hasHash16k ? fileInfo.GetHash16k() : "";
+	out.parFile = fileInfo.GetParFile();
+	out.hasParSetId = fileInfo.GetParFile() && !Util::EmptyStr(fileInfo.GetParSetId());
+	out.parSetId = out.hasParSetId ? fileInfo.GetParSetId() : "";
+	out.fedBytes = mirrorPtr->GetRecorded().size();
+	out.fedMatchesPlaintext = mirrorPtr->GetRecorded().size() == plaintext.size() &&
+		memcmp(mirrorPtr->GetRecorded().data(), plaintext.data(), plaintext.size()) == 0;
+
+	// Both legs must receive the exact authenticated plaintext.
+	BOOST_CHECK_EQUAL(out.fedBytes, plaintext.size());
+	BOOST_CHECK(out.fedMatchesPlaintext);
+
+	stdfs::remove_all(tempDir);
+	stdfs::remove_all(tempDirOpt);
+	return out;
 }
 
 } // anonymous namespace
@@ -496,6 +734,59 @@ BOOST_AUTO_TEST_CASE(EncryptedProviderFailoverOverRealNntpTest)
 	RunEncryptedFailoverScenario("failover_disk.dat", false, 0);
 	RunEncryptedFailoverScenario("failover_directwrite.dat", true, 0);
 	RunEncryptedFailoverScenario("failover_cached.dat", false, 250);
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedPar2FirstArticleRenameAnalyzerTest)
+{
+	// T05 DL-2 native repro: an encrypted PAR2 first article through the real
+	// rename analyzer/DirectRenamer path must classify identically to the
+	// ordinary yEnc path: PAR2 flag, set ID and first-16-KiB hash.
+	const std::string password = "test123";
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const uint32_t segmentIndex = 1;
+
+	// Real PAR2 file content (vendored test fixture, also copied for the
+	// postprocess tests).
+	stdfs::path par2Source;
+	const std::vector<stdfs::path> candidates = {
+		stdfs::path(__FILE__).parent_path() / ".." / "testdata" / "parchecker" / "testfile.par2",
+		stdfs::current_path() / "parchecker" / "testfile.par2",
+		stdfs::current_path() / "tests" / "testdata" / "parchecker" / "testfile.par2",
+		stdfs::current_path() / "testdata" / "parchecker" / "testfile.par2"
+	};
+	for (const auto& candidate : candidates)
+	{
+		if (stdfs::exists(candidate))
+		{
+			par2Source = candidate;
+			break;
+		}
+	}
+	BOOST_REQUIRE(stdfs::exists(par2Source));
+	std::ifstream par2In(par2Source, std::ios::binary);
+	BOOST_REQUIRE(par2In);
+	std::vector<uint8_t> plaintext((std::istreambuf_iterator<char>(par2In)),
+		std::istreambuf_iterator<char>());
+	BOOST_REQUIRE(!plaintext.empty());
+
+	Par2FirstArticleResult plain = RunPar2FirstArticleScenario("par2_plain.par2", false,
+		password, salt, segmentIndex, plaintext);
+	Par2FirstArticleResult enc = RunPar2FirstArticleScenario("par2_enc.par2", true,
+		password, salt, segmentIndex, plaintext);
+
+	// Ordinary-path control: the ordinary yEnc leg must classify as PAR2 with
+	// set ID and hash (proves the seam actually classifies).
+	BOOST_CHECK(plain.parFile);
+	BOOST_CHECK(plain.hasParSetId);
+	BOOST_CHECK(plain.hasHash16k);
+
+	// The encrypted leg must produce the identical classification: PAR2 flag,
+	// set ID and first-16-KiB hash all equal the ordinary path.
+	BOOST_CHECK_EQUAL(enc.parFile, plain.parFile);
+	BOOST_CHECK_EQUAL(enc.hasParSetId, plain.hasParSetId);
+	BOOST_CHECK_EQUAL(enc.parSetId, plain.parSetId);
+	BOOST_CHECK_EQUAL(enc.hasHash16k, plain.hasHash16k);
+	BOOST_CHECK_EQUAL(enc.hash16k, plain.hash16k);
 }
 
 BOOST_AUTO_TEST_CASE(EncryptedRawArticleRejectedBeforeRequestTest)
@@ -716,6 +1007,10 @@ BOOST_AUTO_TEST_CASE(EncryptedAllProvidersExhaustedTest)
 	downloader.SetInfoName("exhaust_article");
 	downloader.SetConnection(pool.GetConnection(0, nullptr, nullptr));
 
+	auto recordingAnalyzer = std::make_unique<RecordingContentAnalyzer>();
+	RecordingContentAnalyzer* analyzerPtr = recordingAnalyzer.get();
+	downloader.SetContentAnalyzer(std::move(recordingAnalyzer));
+
 	downloader.Run();
 
 	// Both providers were contacted (each served the corrupted article) and
@@ -735,6 +1030,9 @@ BOOST_AUTO_TEST_CASE(EncryptedAllProvidersExhaustedTest)
 	BOOST_CHECK(!stdfs::exists(tempDirOpt / "1.001.tmp"));
 	// - no final destination file
 	BOOST_CHECK(!stdfs::exists(tempDir / filename));
+	// - T05: content analyzer receives nothing from failed attempts
+	BOOST_CHECK_EQUAL(analyzerPtr->GetAppendCount(), 0);
+	BOOST_CHECK(analyzerPtr->GetRecorded().empty());
 
 	g_ServerPool = env.oldServerPool;
 	stdfs::remove_all(tempDir);

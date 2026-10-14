@@ -30,6 +30,7 @@
 #include "ArticleDownloader.h"
 #include "YEncTestHelpers.h"
 
+#include <argon2.h>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -85,7 +86,7 @@ BOOST_AUTO_TEST_CASE(DeriveBodyNonceTest)
 
 BOOST_AUTO_TEST_CASE(DerivationFailsClosedWithoutMasterKey)
 {
-	// NG-2: derivation must fail closed before any HMAC/copy work when no
+	// Derivation must fail closed before any HMAC/copy work when no
 	// master key is cached, leaving the output buffers untouched. The deeper
 	// HMAC-failure branch (HMAC() returning nullptr) cannot be triggered
 	// without a production hook; it is covered by static review: the return
@@ -195,90 +196,6 @@ BOOST_AUTO_TEST_CASE(ParseYEncryptionTest)
 
 	std::string badIndex = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000000 tag=0cd77ce245a654463f90b945b1d22d5b\r\n";
 	BOOST_CHECK(!YEncDecryptor::ParseYEncryption(badIndex.c_str(), badIndex.length(), badHeader));
-}
-
-BOOST_AUTO_TEST_CASE(DecoderEncryptedIntegrationTest)
-{
-	Decoder decoder;
-	decoder.SetCrcCheck(false); // Testing payload exclusion and decryption
-	YEncDecryptor decryptor("test123");
-	decoder.SetDecryptor(&decryptor);
-	// The segment index is discovered directly from the wire bytes
-
-	std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
-	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
-	std::string yencBody = SimpleYencEncode(ciphertext);
-
-	std::string line1Plain = "=ybegin line=128 size=" + std::to_string(ciphertext.size()) + " name=test.dat";
-	std::vector<uint8_t> wire1;
-	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
-		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
-		1, 1, true, salt.data(), wire1
-	)), static_cast<int>(YEncDecryptor::Status::Ok));
-
-	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
-	std::vector<uint8_t> wire2;
-	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
-		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
-		1, 2, false, salt.data(), wire2
-	)), static_cast<int>(YEncDecryptor::Status::Ok));
-
-	std::ostringstream footer;
-	Crc32 wireCrc; wireCrc.Append(ciphertext.data(), ciphertext.size());
-	footer << "=yend size=" << ciphertext.size() << " crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
-	std::string line4Plain = footer.str();
-	std::vector<uint8_t> wire4;
-	BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
-		reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
-		1, 4, false, salt.data(), wire4
-	)), static_cast<int>(YEncDecryptor::Status::Ok));
-
-	std::string fullWire;
-	fullWire.append(reinterpret_cast<const char*>(wire1.data()), wire1.size()); fullWire.append("\r\n");
-	fullWire.append(reinterpret_cast<const char*>(wire2.data()), wire2.size()); fullWire.append("\r\n");
-	fullWire.append(yencBody); fullWire.append("\r\n");
-	fullWire.append(reinterpret_cast<const char*>(wire4.data()), wire4.size()); fullWire.append("\r\n.\r\n");
-
-	decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
-
-	BOOST_CHECK(decoder.IsEncrypted());
-	BOOST_CHECK_EQUAL(BinToHex(decoder.GetSalt(), 16), "1a2b3c4d5e6f7890abcdef1234567890");
-	BOOST_CHECK_EQUAL(BinToHex(decoder.GetTag(), 16), "a85856949ac1c3f44794f8d008fcdb13");
-	BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), 1U);
-
-	auto status = decoder.Check();
-	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(Decoder::dsFinished));
-
-	// Verify decrypted plaintext
-	std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
-	BOOST_CHECK_EQUAL(BinToHex(decoder.GetDecryptedData().data(), decoder.GetDecryptedData().size()),
-		BinToHex(expectedPlaintext.data(), expectedPlaintext.size()));
-}
-
-BOOST_AUTO_TEST_CASE(DecoderAuthFailureIntegrationTest)
-{
-	Decoder decoder;
-	decoder.SetCrcCheck(false);
-	YEncDecryptor decryptor("test123");
-	decoder.SetDecryptor(&decryptor);
-
-	std::vector<uint8_t> ciphertext = HexToBin("6a0d1eb225f844920540fa382ff68874");
-	std::string yencBody = SimpleYencEncode(ciphertext);
-
-	// Corrupt tag
-	std::stringstream ss;
-	ss << "=ybegin line=128 size=" << ciphertext.size() << " name=test.dat\r\n";
-	ss << "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=ffffffffffffffffffffffffffffffff\r\n";
-	ss << yencBody << "\r\n";
-	ss << "=yend size=" << ciphertext.size() << "\r\n";
-	ss << ".\r\n";
-
-	std::string msg = ss.str();
-	decoder.DecodeBuffer(msg.data(), msg.size());
-
-	auto status = decoder.Check();
-	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(Decoder::dsAuthFailed));
-	BOOST_CHECK_EQUAL(decoder.GetDecryptedData().size(), 0); // Zero-Output Guarantee!
 }
 
 BOOST_AUTO_TEST_CASE(YEncryptionGrammarTest)
@@ -618,47 +535,6 @@ BOOST_AUTO_TEST_CASE(YEncryptionZeroOutputTest)
 	BOOST_CHECK_EQUAL(decoder.GetDecryptedData().size(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(YEncDecryptorRaiiExceptionSafetyTest)
-{
-	YEncDecryptor decryptor("test_password");
-	uint8_t salt[16] = {0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28};
-	BOOST_REQUIRE(decryptor.EnsureMasterKey(salt));
-
-	// Test control line decryption with invalid / truncated wire data
-	std::vector<uint8_t> outPlaintext;
-	std::vector<uint8_t> outSalt;
-	uint32_t outSegIndex = 0;
-
-	// Invalid line 1 wire data (< 22 bytes)
-	uint8_t shortWire[10] = {0};
-	auto st = decryptor.DecryptControlLine(shortWire, sizeof(shortWire), 1, 1, true, outPlaintext, &outSalt, &outSegIndex);
-	BOOST_CHECK(st == YEncDecryptor::Status::Error);
-	BOOST_CHECK(outPlaintext.empty());
-
-	// Invalid non-line-1 wire data
-	st = decryptor.DecryptControlLine(shortWire, 1, 1, 2, false, outPlaintext);
-	BOOST_CHECK(st == YEncDecryptor::Status::Error);
-	BOOST_CHECK(outPlaintext.empty());
-
-	// Valid control line encrypt/decrypt cycle
-	std::string plain = "=ybegin line=128 size=12345 name=test.dat";
-	std::vector<uint8_t> wireData;
-	st = decryptor.EncryptControlLine(
-		reinterpret_cast<const uint8_t*>(plain.data()), plain.size(),
-		1, 1, true, salt, wireData
-	);
-	BOOST_CHECK(st == YEncDecryptor::Status::Ok);
-	BOOST_CHECK(!wireData.empty());
-
-	st = decryptor.DecryptControlLine(
-		wireData.data(), wireData.size(),
-		1, 1, true, outPlaintext, &outSalt, &outSegIndex
-	);
-	BOOST_CHECK(st == YEncDecryptor::Status::Ok);
-	std::string decrypted(outPlaintext.begin(), outPlaintext.end());
-	BOOST_CHECK_EQUAL(decrypted, plain);
-}
-
 BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
 {
 	YEncDecryptor decryptor("test_password");
@@ -737,12 +613,11 @@ BOOST_AUTO_TEST_CASE(ForbiddenSegmentIndexByteRejectTest)
 BOOST_AUTO_TEST_CASE(JobOwnedKeyCacheSharingTest)
 {
 	// Job-owned Argon2id master-key cache:
-	// 1. Sharing across separate YEncDecryptor instances for the same job.
-	// 2. Multiple salts support.
-	// 3. Cache clearing on password change or job teardown.
+	// 1. Sharing across separate YEncDecryptor instances for the same job
+	//    (single-entry: one salt per upload per the standard).
+	// 2. Cache clearing on password change or job teardown.
 	YEncKeyCache jobCache;
 	uint8_t salt1[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-	uint8_t salt2[16] = {16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
 
 	// Worker 1: derives key for salt1 and stores into jobCache
 	YEncDecryptor worker1("secret_password", &jobCache);
@@ -757,56 +632,43 @@ BOOST_AUTO_TEST_CASE(JobOwnedKeyCacheSharingTest)
 		worker1.GetCachedMasterKey().begin(), worker1.GetCachedMasterKey().end(),
 		worker2.GetCachedMasterKey().begin(), worker2.GetCachedMasterKey().end());
 
-	// Worker 2 derives key for salt2: jobCache now caches both salts
-	BOOST_CHECK(worker2.EnsureMasterKey(salt2));
-	BOOST_CHECK_EQUAL(jobCache.Size(), 2U);
-	BOOST_CHECK_NE(
-		BinToHex(worker2.GetCachedMasterKey().data(), 32),
-		BinToHex(worker1.GetCachedMasterKey().data(), 32));
-
-	// Worker 1 can now also use salt2 from cache
-	BOOST_CHECK(worker1.EnsureMasterKey(salt2));
+	// Clearing cache (e.g. password change or job teardown) zeroizes and drops the entry;
+	// the next derivation runs the KDF again and yields the same key.
+	jobCache.Clear();
+	BOOST_CHECK_EQUAL(jobCache.Size(), 0U);
+	BOOST_CHECK(worker2.EnsureMasterKey(salt1));
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		worker1.GetCachedMasterKey().begin(), worker1.GetCachedMasterKey().end(),
 		worker2.GetCachedMasterKey().begin(), worker2.GetCachedMasterKey().end());
-
-	// Clearing cache (e.g. password change or job teardown) zeroizes and drops entries
-	jobCache.Clear();
-	BOOST_CHECK_EQUAL(jobCache.Size(), 0U);
-	uint8_t dummyKey[32];
-	BOOST_CHECK(!jobCache.GetKey(salt1, dummyKey));
-	BOOST_CHECK(!jobCache.GetKey(salt2, dummyKey));
 }
 
 BOOST_AUTO_TEST_CASE(ConcurrentEnsureMasterKeyDerivesOnce)
 {
-	class CountingCache : public YEncKeyCache
-	{
-	public:
-		std::atomic<int> runs{0};
-		bool GetOrDeriveKey(const uint8_t salt[16], const std::string& password,
-			uint8_t key[32], const std::function<bool(uint8_t*)>& derive) override
-		{
-			return YEncKeyCache::GetOrDeriveKey(salt, password, key, [&](uint8_t* output)
-			{
-				++runs;
-				return derive(output);
-			});
-		}
-	} cache;
+	// Single-flight: the lock is held across the derive callback, so N
+	// parallel callers for the same salt run the (expensive) KDF exactly once.
+	YEncKeyCache cache;
 	uint8_t salt[16] = {1};
+	std::atomic<int> runs{0};
 	std::atomic<int> successes{0};
 	std::vector<std::thread> workers;
 	for (int i = 0; i < 8; ++i)
 	{
 		workers.emplace_back([&]()
 		{
-			YEncDecryptor decryptor("password", &cache);
-			if (decryptor.EnsureMasterKey(salt)) ++successes;
+			uint8_t key[32];
+			if (cache.GetOrDeriveKey(salt, "password", key, [&](uint8_t* output)
+				{
+					++runs;
+					// Costly derivation stand-in; serialized by the cache lock.
+					return argon2id_hash_raw(1, 4096, 1, "password", 8, salt, 16, output, 32) == ARGON2_OK;
+				}))
+			{
+				++successes;
+			}
 		});
 	}
 	for (auto& worker : workers) worker.join();
-	BOOST_CHECK_EQUAL(cache.runs, 1);
+	BOOST_CHECK_EQUAL(runs, 1);
 	BOOST_CHECK_EQUAL(successes, 8);
 }
 
@@ -818,6 +680,8 @@ BOOST_AUTO_TEST_CASE(PasswordEditAfterQueueUsesNewKey)
 	YEncDecryptor newWorker("correct", &cache);
 	YEncDecryptor independent("correct");
 	BOOST_REQUIRE(oldWorker.EnsureMasterKey(salt));
+	// The cached entry is keyed by salt + password hash, so a password edit
+	// cannot reuse the old key (ArticleDownloader rebuilds the decryptor).
 	BOOST_REQUIRE(newWorker.EnsureMasterKey(salt));
 	BOOST_REQUIRE(independent.EnsureMasterKey(salt));
 	BOOST_CHECK(newWorker.GetCachedMasterKey() != oldWorker.GetCachedMasterKey());

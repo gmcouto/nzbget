@@ -573,6 +573,87 @@ BOOST_AUTO_TEST_CASE(EncryptedRawArticleRejectedBeforeRequestTest)
 	stdfs::remove_all(tempDirOpt);
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedEmptyPasswordFailsStructurallyTest)
+{
+	// Body Std v1.2 §5/§8: "no available password" is METADATA_VALIDATION — a
+	// structural failure, never provider corruption. If the password of a
+	// queued encrypted job becomes empty later (e.g. API editqueue of
+	// *Unpack:Password), the article fetch must fail with adFatalError BEFORE
+	// contacting any provider: empty password ⇒ no decryptor ⇒ the wire path
+	// cannot even recognize the article. Retrying other providers is futile
+	// (each would fail identically) and must not happen.
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_emptypwd_test";
+	stdfs::path tempDirOpt = stdfs::temp_directory_path() / "nzbget_emptypwd_temp";
+	stdfs::create_directories(tempDir);
+	stdfs::create_directories(tempDirOpt);
+
+	const std::string password = "test123";
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const std::vector<uint8_t> plaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
+	const std::string filename = "emptypwd.dat";
+
+	std::string validWire = BuildValidEncryptedWireArticle(password, salt, 1, filename, plaintext);
+
+	std::atomic<int> requests{0};
+	LocalNntpServer server(validWire, &requests);
+
+	ServerPool pool;
+	auto server1 = std::make_unique<NewsServer>(1, true, "primary", "127.0.0.1", server.GetPort(), 0,
+		"", "", false, false, nullptr, 1, 0, 0, 0, false, Options::cvStrict);
+	auto server2 = std::make_unique<NewsServer>(2, true, "backup", "127.0.0.1", server.GetPort(), 0,
+		"", "", false, false, nullptr, 1, 0, 1, 0, false, Options::cvStrict);
+	pool.AddServer(std::move(server1));
+	pool.AddServer(std::move(server2));
+	pool.InitConnections();
+	pool.SetRetryInterval(60);
+
+	DownloaderEnv env(tempDirOpt.string(), false, 0);
+	g_ServerPool = &pool;
+	env.statMeter->Init();
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+	// The password was emptied after queueing (API edit); the encrypted flag
+	// stays set — this is the exact scenario from the finding.
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", "");
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename(filename);
+	fileInfo.SetTime(Util::CurrentTime());
+
+	fileInfo.GetArticles()->resize(1);
+	(*fileInfo.GetArticles())[0] = std::make_unique<ArticleInfo>();
+	(*fileInfo.GetArticles())[0]->SetMessageId("<emptypwd-msg@test>");
+	(*fileInfo.GetArticles())[0]->SetSize(static_cast<int>(plaintext.size()));
+	(*fileInfo.GetArticles())[0]->SetPartNumber(1);
+
+	ArticleDownloader downloader;
+	downloader.SetFileInfo(&fileInfo);
+	downloader.SetArticleInfo((*fileInfo.GetArticles())[0].get());
+	downloader.SetInfoName("emptypwd_article");
+	downloader.SetConnection(pool.GetConnection(0, nullptr, nullptr));
+
+	// Drive Download() directly to observe the raw pre-normalization status.
+	ArticleDownloader::EStatus status = downloader.TestDownload();
+
+	// Structural failure: the job-level loop breaks on adFatalError without
+	// trying the next provider (Run() later normalizes it to adFailed).
+	BOOST_CHECK_EQUAL(static_cast<int>(status), static_cast<int>(ArticleDownloader::adFatalError));
+
+	// The rejection must precede the article request: no BODY/ARTICLE was sent.
+	BOOST_CHECK_EQUAL(requests.load(), 0);
+
+	// Zero output: nothing committed to any sink.
+	BOOST_CHECK((*fileInfo.GetArticles())[0]->GetSegmentContent() == nullptr);
+	BOOST_CHECK(!stdfs::exists(tempDir / filename));
+
+	g_ServerPool = env.oldServerPool;
+	stdfs::remove_all(tempDir);
+	stdfs::remove_all(tempDirOpt);
+}
+
 BOOST_AUTO_TEST_CASE(EncryptedAllProvidersExhaustedTest)
 {
 	// Exhaustion leg: BOTH providers serve the corrupted article. The

@@ -653,6 +653,102 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseUnsupportedVersionTest)
 		BOOST_CHECK(info->IsYEncEncrypted());
 	}
 
+	// Empty version tag on encrypted release is rejected (Body Std v1.2 §8)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\"></meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_empty_version.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Self-closing empty version tag
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\"/>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_empty_version_selfclose.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Whitespace-only version tag
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">   </meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_whitespace_version.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Empty cipher tag on encrypted release is rejected (Body Std v1.2 §8)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\"></meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_empty_cipher.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Self-closing empty cipher tag
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\"/>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_empty_cipher_selfclose.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Whitespace-only cipher tag
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\">   </meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_whitespace_cipher.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(hasValidation(info));
+	}
+
+	// Absent version and cipher meta tags parse fine (absent is allowed)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_absent_version_cipher.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// Correct version and cipher together parse fine
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"enc_good_version_and_cipher.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
 	// Version/cipher metas on a NON-encrypted release are ignored
 	{
 		auto [ok, info] = parseXml(

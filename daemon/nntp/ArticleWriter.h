@@ -64,7 +64,7 @@ public:
 	void Prepare();
 	bool Start(Decoder::EFormat format, const char* filename, int64 fileSize, int64 articleOffset, int articleSize);
 	bool Write(char* buffer, int len);
-	bool CommitAuthenticatedData(const uint8_t* data, size_t length, int64_t offset);
+	bool CommitAuthenticatedData(const uint8_t* data, size_t length);
 	void DiscardStagedData();
 	void Finish(bool success);
 	bool GetDuplicate() { return m_duplicate; }

@@ -247,22 +247,20 @@ void NzbFile::CalcHashes()
 bool NzbFile::ValidateEncryptedReleaseMetadata()
 {
 	// Structural tier (METADATA_VALIDATION, Body Std v1.2 §5): failures here can
-	// never authenticate. Abort at queue time — before any server
-	// contact — instead of burning every provider with per-article auth failures.
-
-	// Resolve every supported password source BEFORE the missing-password
-	// check. <meta type="password"> is the interoperable default; the NZB
-	// filename {{...}} token is the app-native override consumed by
-	// ReadPasswordFromFilename. External sources (API/CLI parameters) are
-	// applied by Scanner/ProcessStandalone after Parse; those callers enforce
-	// the effective-password gate AFTER the parameter merge (Scanner gate +
-	// ProcessStandalone gate), because only then are all sources known.
+	// never authenticate, so abort at queue time before any server contact.
+	// <meta type="password"> is the interoperable default; the NZB filename
+	// {{...}} token override is consumed by ReadPasswordFromFilename. External
+	// sources (API/CLI parameters) are applied by Scanner/ProcessStandalone
+	// after Parse; those callers enforce the effective-password gate after the
+	// parameter merge, because only then are all sources known.
 	if (m_yencEncryptedMeta)
 	{
 		// Supplied yenc_version/yenc_cipher must be locally supported
-		// (ordering-independent: both metas are captured during SAX parsing and
-		// validated here, after the whole head was consumed).
-		if (!m_yencVersionMeta.empty() && m_yencVersionMeta != "1.2")
+		// (Body Std v1.2 §8: an entry present with an empty value counts as a
+		// non-matching value, not as an absent entry; ordering-independent —
+		// both metas are captured during SAX parsing and validated here, after
+		// the whole head was consumed).
+		if (m_yencVersionPresent && m_yencVersionMeta != "1.2")
 		{
 			m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
 				"Error parsing nzb-file %s: METADATA_VALIDATION: unsupported yenc_version: %s",
@@ -270,7 +268,7 @@ bool NzbFile::ValidateEncryptedReleaseMetadata()
 			return false;
 		}
 
-		if (!m_yencCipherMeta.empty() && strcasecmp(m_yencCipherMeta.c_str(), "XChaCha20-Poly1305") != 0)
+		if (m_yencCipherPresent && strcasecmp(m_yencCipherMeta.c_str(), "XChaCha20-Poly1305") != 0)
 		{
 			m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
 				"Error parsing nzb-file %s: METADATA_VALIDATION: unsupported yenc_cipher: %s",
@@ -550,23 +548,23 @@ void NzbFile::Parse_EndElement(const char *name)
 	}
 	else if (!strcmp("meta", name) && m_hasPassword)
 	{
-		m_password = m_tagContent;
+		m_password = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 	}
 	else if (!strcmp("meta", name) && m_hasCategory)
 	{
-		m_category = m_tagContent;
+		m_category = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 	}
 	else if (!strcmp("meta", name) && m_hasName)
 	{
-		m_metaName = m_tagContent;
+		m_metaName = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 	}
 	else if (!strcmp("meta", name) && m_hasTitle)
 	{
-		m_metaTitle = m_tagContent;
+		m_metaTitle = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 	}
 	else if (!strcmp("meta", name) && m_hasYEncEncrypted)
 	{
-		std::string val = *m_tagContent;
+		std::string val = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 		Util::Trim(val);
 		if (!strcasecmp(val.c_str(), "true"))
 		{
@@ -575,13 +573,15 @@ void NzbFile::Parse_EndElement(const char *name)
 	}
 	else if (!strcmp("meta", name) && m_hasYEncVersion)
 	{
-		m_yencVersionMeta = *m_tagContent;
+		m_yencVersionMeta = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 		Util::Trim(m_yencVersionMeta);
+		m_yencVersionPresent = true;
 	}
 	else if (!strcmp("meta", name) && m_hasYEncCipher)
 	{
-		m_yencCipherMeta = *m_tagContent;
+		m_yencCipherMeta = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
 		Util::Trim(m_yencCipherMeta);
+		m_yencCipherPresent = true;
 	}
 
 	m_currentElement.clear();

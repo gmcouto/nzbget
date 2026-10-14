@@ -55,6 +55,10 @@ LIBXML2_VERSION=2.13.5
 OPENSSL_VERSION=3.5.5
 # https://github.com/boostorg/boost/releases
 BOOST_VERSION=1.84.0
+# https://github.com/jedisct1/libsodium/releases (fixed -RELEASE tags)
+LIBSODIUM_VERSION=1.0.20
+# https://github.com/P-H-C/phc-winner-argon2/releases
+ARGON2_VERSION=20190702
 
 help()
 {
@@ -205,6 +209,12 @@ download_lib_source()
     LIB=$1
     URL=$2
     LIB_SRC_FILE=${URL##*/}
+    if [ "$LIB" == "argon2" ]; then
+        # The 20190702 GitHub release has no downloadable assets (404); fetch
+        # the codeload archive instead while keeping the canonical
+        # argon2-$ARGON2_VERSION.tar.gz file name.
+        URL="https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/$ARGON2_VERSION.tar.gz"
+    fi
     if [ ! -f "$LIB_SRC_PATH/$LIB_SRC_FILE" ]; then
         echo "Downloading $LIB_SRC_FILE ..."
         mkdir -p "$LIB_SRC_PATH"
@@ -224,6 +234,11 @@ build_lib()
         cd "$LIB_PATH/$ARCH"
         tar zxf "$LIB_SRC_FILE"
         rm $LIB_SRC_FILE
+        if [ "$LIB" == "argon2" ]; then
+            # codeload archive extracts as phc-winner-argon2-<ver>, not
+            # argon2-<ver> (which the cd below derives from the file name).
+            mv phc-winner-argon2-$ARGON2_VERSION ${LIB_SRC_FILE/.tar.gz/}
+        fi
         cd ${LIB_SRC_FILE/.tar.gz/}
         case $LIB in
             ncurses)
@@ -360,8 +375,27 @@ build_lib()
                     ./b2 --toolset=gcc-buildroot cxxstd=14 link=static runtime-link=static install
                 fi
                 ;;
+            libsodium)
+                ./configure --host=$HOST \
+                --enable-static \
+                --disable-shared \
+                --disable-ssp \
+                --prefix="$PWD/../$LIB"
+                ;;
+            argon2)
+                # P-H-C/phc-winner-argon2 builds with its plain Makefile (no
+                # configure); OPTTARGET=generic keeps the build portable
+                # across cross toolchains.
+                make -j $COREX OPTTARGET=generic
+                # LIBRARY_REL/PKGCONFIG_REL: the Makefile defaults to
+                # lib/<host-multiarch> (e.g. lib/x86_64-linux-gnu) on some
+                # hosts, which the -L flag below does not cover; pin to lib.
+                make install OPTTARGET=generic PREFIX="$PWD/../$LIB" LIBRARY_REL=lib PKGCONFIG_REL=lib
+                ;;
         esac
-        if [ "$LIB" != "boost" ]; then
+        # argon2 builds/installs inside its case arm (plain Makefile, no
+        # configure; make is invoked there explicitly).
+        if [ "$LIB" != "boost" ] && [ "$LIB" != "argon2" ]; then
             make -j $COREX
             if [ "$LIB" == "openssl" ]; then
                 make install_sw
@@ -572,6 +606,8 @@ build_bin()
     build_lib "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v$LIBXML2_VERSION/libxml2-v$LIBXML2_VERSION.tar.gz"
     build_lib "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
     build_lib "https://github.com/boostorg/boost/releases/download/boost-$BOOST_VERSION/boost-$BOOST_VERSION.tar.gz"
+    build_lib "https://github.com/jedisct1/libsodium/releases/download/$LIBSODIUM_VERSION-RELEASE/libsodium-$LIBSODIUM_VERSION.tar.gz"
+    build_lib "https://github.com/P-H-C/phc-winner-argon2/releases/download/$ARGON2_VERSION/argon2-$ARGON2_VERSION.tar.gz"
 
     export INCLUDES="$NZBGET_INCLUDES"
     CMAKE_SYSTEM_NAME="Linux"
@@ -579,17 +615,17 @@ build_bin()
     TOOLCHAIN_PREFIX="$TOOLCHAIN_PATH/$ARCH/output/host/usr/bin/$HOST"
     case $PLATFORM in
         android)
-            export LIBS="$LDFLAGS -lxml2 -lboost_json -lboost_filesystem -lssl -lcrypto -lz -lncursesw -latomic"
+            export LIBS="$LDFLAGS -lxml2 -lboost_json -lboost_filesystem -lssl -lcrypto -lsodium -largon2 -lz -lncursesw -latomic"
             CMAKE_EXTRA_ARGS="-DCOMPILER=clang -DTOOLCHAIN_PREFIX=$TOOLCHAIN_PREFIX"
             ;;
         freebsd)
-            export LIBS="$LDFLAGS -lxml2 -lboost_json -lssl -lcrypto -lz -lncursesw -lc++ -lexecinfo -lelf -Wl,--whole-archive -lpthread -Wl,--no-whole-archive"
+            export LIBS="$LDFLAGS -lxml2 -lboost_json -lssl -lcrypto -lsodium -largon2 -lz -lncursesw -lc++ -lexecinfo -lelf -Wl,--whole-archive -lpthread -Wl,--no-whole-archive"
             export INCLUDES="$NZBGET_INCLUDES;$FREEBSD_SYSROOT/usr/include/c++/v1"
             CMAKE_SYSTEM_NAME="FreeBSD"
             CMAKE_EXTRA_ARGS="-DCMAKE_SYSROOT=$FREEBSD_SYSROOT -DCMAKE_CXX_FLAGS=-I$FREEBSD_SYSROOT/usr/include/c++/v1"
             ;;
         *)
-            export LIBS="$LDFLAGS -lxml2 -lrt -lboost_json -lc -lssl -lcrypto -lz -lncursesw -latomic -Wl,--whole-archive -lpthread -Wl,--no-whole-archive"
+            export LIBS="$LDFLAGS -lxml2 -lrt -lboost_json -lc -lssl -lcrypto -lsodium -largon2 -lz -lncursesw -latomic -Wl,--whole-archive -lpthread -Wl,--no-whole-archive"
             CMAKE_EXTRA_ARGS="-DTOOLCHAIN_PREFIX=$TOOLCHAIN_PREFIX"
             ;;
     esac

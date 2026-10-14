@@ -176,6 +176,12 @@ BOOST_AUTO_TEST_CASE(ScannerEffectivePasswordGateTest)
 			bool added = scanner->TestAddFileToQueue(nzbFile.string().c_str(),
 				"scan_gate_nopwd", "", true, 0, "", 0, dmScore, &parameters, false, false, nullptr, &nzbId);
 			BOOST_CHECK(!added);
+
+			// A rejected encrypted release must get the same backup suffix as
+			// every other parse failure (.error), not .queued: the effective-
+			// password gate runs before the backup rename.
+			BOOST_CHECK(!fs::exists(tempDir / "scan_gate_nopwd.nzb.queued"));
+			BOOST_CHECK(fs::exists(tempDir / "scan_gate_nopwd.nzb.error"));
 		}
 
 		// (c) sanity: an UNencrypted release without any password is still

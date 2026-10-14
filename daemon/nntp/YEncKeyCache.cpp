@@ -21,84 +21,53 @@
 #include "YEncKeyCache.h"
 
 #include <sodium.h>
-#include <algorithm>
 
 YEncKeyCache::~YEncKeyCache()
 {
 	Clear();
 }
 
-bool YEncKeyCache::GetKey(const uint8_t salt[16], uint8_t outKey[32], const std::string& password)
-{
-	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	uint8_t passwordHash[32];
-	crypto_hash_sha256(passwordHash, reinterpret_cast<const unsigned char*>(password.data()), password.size());
-	for (Entry& entry : m_entries)
-	{
-		if (memcmp(entry.salt, salt, 16) == 0 && memcmp(entry.passwordHash, passwordHash, 32) == 0)
-		{
-			memcpy(outKey, entry.key, 32);
-			return true;
-		}
-	}
-	return false;
-}
-
-void YEncKeyCache::PutKey(const uint8_t salt[16], const uint8_t key[32], const std::string& password)
-{
-	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	uint8_t passwordHash[32];
-	crypto_hash_sha256(passwordHash, reinterpret_cast<const unsigned char*>(password.data()), password.size());
-	for (Entry& entry : m_entries)
-	{
-		if (memcmp(entry.salt, salt, 16) == 0 && memcmp(entry.passwordHash, passwordHash, 32) == 0)
-		{
-			memcpy(entry.key, key, 32);
-			return;
-		}
-	}
-
-	if (m_entries.size() >= MAX_CACHED_SALTS)
-	{
-		// Evict the oldest entry, zeroizing its key material
-		sodium_memzero(m_entries.front().key, 32);
-		sodium_memzero(m_entries.front().passwordHash, 32);
-		m_entries.erase(m_entries.begin());
-	}
-
-	Entry entry;
-	memcpy(entry.salt, salt, 16);
-	memcpy(entry.passwordHash, passwordHash, 32);
-	memcpy(entry.key, key, 32);
-	m_entries.push_back(entry);
-}
-
 void YEncKeyCache::Clear()
 {
-	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	for (Entry& entry : m_entries)
-	{
-		sodium_memzero(entry.key, 32);
-		sodium_memzero(entry.passwordHash, 32);
-	}
-	m_entries.clear();
+	std::lock_guard<std::mutex> lock(m_mutex);
+	Zeroize();
 }
 
+void YEncKeyCache::Zeroize()
+{
+	if (m_filled)
+	{
+		sodium_memzero(m_entry.key, sizeof(m_entry.key));
+		sodium_memzero(m_entry.passwordHash, sizeof(m_entry.passwordHash));
+		m_filled = false;
+	}
+}
 
-// The recursive lock keeps lookup, KDF and insertion one atomic operation.
+// The lock is held across lookup, KDF and insertion: one atomic single-flight
+// operation (prevents N parallel 64 MiB Argon2id runs for the same salt).
 bool YEncKeyCache::GetOrDeriveKey(const uint8_t salt[16], const std::string& password,
 	uint8_t outKey[32], const std::function<bool(uint8_t*)>& derive)
 {
-	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	if (GetKey(salt, outKey, password))
+	std::lock_guard<std::mutex> lock(m_mutex);
+	uint8_t passwordHash[32];
+	crypto_hash_sha256(passwordHash, reinterpret_cast<const unsigned char*>(password.data()), password.size());
+	if (m_filled && memcmp(m_entry.salt, salt, 16) == 0 &&
+		memcmp(m_entry.passwordHash, passwordHash, 32) == 0)
 	{
+		memcpy(outKey, m_entry.key, 32);
 		return true;
 	}
 	if (!derive(outKey))
 	{
+		sodium_memzero(passwordHash, sizeof(passwordHash));
 		sodium_memzero(outKey, 32);
 		return false;
 	}
-	PutKey(salt, outKey, password);
+	Zeroize();
+	memcpy(m_entry.salt, salt, 16);
+	memcpy(m_entry.passwordHash, passwordHash, 32);
+	memcpy(m_entry.key, outKey, 32);
+	m_filled = true;
+	sodium_memzero(passwordHash, sizeof(passwordHash));
 	return true;
 }

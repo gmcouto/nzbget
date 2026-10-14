@@ -350,10 +350,22 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 	// articles bypass the decryptor entirely and ciphertext would be committed
 	// or discarded as content). Reject BEFORE the BODY/ARTICLE request — no
 	// bytes are fetched and nothing is committed.
-	if (g_Options->GetRawArticle() && m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		m_fileInfo->GetNzbInfo()->IsYEncEncrypted())
+	bool declaredEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
+		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
+	if (g_Options->GetRawArticle() && declaredEncrypted)
 	{
 		error("Article %s: RawArticle mode is unsupported for encrypted releases", *m_infoName);
+		return adFatalError;
+	}
+
+	// Body Std v1.2 §5: "no available password" is METADATA_VALIDATION — a
+	// structural failure, not provider corruption. An encrypted job whose
+	// password became empty after queueing (e.g. API edit of *Unpack:Password)
+	// can never authenticate any article from any provider, so fail the job
+	// instead of burning every server with futile retries.
+	if (declaredEncrypted && m_fileInfo->GetNzbInfo()->GetPassword()[0] == '\0')
+	{
+		error("Article %s: encrypted release has no password, failing structurally", *m_infoName);
 		return adFatalError;
 	}
 
@@ -583,28 +595,12 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 				m_articleFilename = m_decoder.GetArticleFilename();
 			}
 
-			// No silent ciphertext fallback (Body Std v1.2 §8): if the NZB
-			// declared this release yenc_encrypted but the article carried no
-			// =yencryption bootstrap (body-only/unencrypted wire), m_decoder
-			// never entered encrypted mode — the decoded bytes are ciphertext
-			// (or garbage), not authenticated plaintext. Treat as provider
-			// corruption → adNotFound failover; commit nothing.
-			bool declaredEncrypted = m_fileInfo && m_fileInfo->GetNzbInfo() &&
-				m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
-			if (declaredEncrypted && !m_decoder.IsEncrypted())
-			{
-				if (m_writingStarted)
-				{
-					m_articleWriter.DiscardStagedData();
-				}
-				detail("Article %s: encrypted release without =yencryption bootstrap, "
-					"treating as provider corruption", *m_infoName);
-				return adNotFound;
-			}
-
-			// Downstream CRC normalization (Body Std v1.2 §9): the ciphertext CRC
-			// must never be persisted; encrypted segments record the CRC of the
-			// authenticated plaintext below, so PAR2 quick verification matches.
+			// Body Std v1.2 §8: an encrypted job always carries a non-empty
+			// password here (the empty-password structural gate in Download()
+			// runs first) and always fetches through the decryptor's wire path,
+			// so a decoded article is either encrypted or the job is not
+			// declared encrypted — an encrypted job can never produce an
+			// unencrypted decode result.
 			if (m_decoder.GetFormat() == Decoder::efYenc && !m_decoder.IsEncrypted())
 			{
 				m_articleInfo->SetCrc(g_Options->GetCrcCheck() ?
@@ -628,10 +624,6 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 					warn("Malformed encrypted article geometry %s: begin=%" PRIi64 " end=%" PRIi64
 						" size=%" PRIi64 " decrypted=%i",
 						*m_infoName, beginPos, endPos, articleFileSize, articleSize);
-					if (m_writingStarted)
-					{
-						m_articleWriter.DiscardStagedData();
-					}
 					return adNotFound;
 				}
 
@@ -645,8 +637,7 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 
 				if (!m_articleWriter.CommitAuthenticatedData(
 					m_decoder.GetDecryptedData().data(),
-					m_decoder.GetDecryptedData().size(),
-					articleOffset))
+					m_decoder.GetDecryptedData().size()))
 				{
 					return adFatalError;
 				}
@@ -661,10 +652,6 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 		}
 		else if (status == Decoder::dsAuthFailed)
 		{
-			if (m_writingStarted)
-			{
-				m_articleWriter.DiscardStagedData();
-			}
 			warn("Article %s failed authentication, retrying...", *m_infoName);
 			return adNotFound;
 		}

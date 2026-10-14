@@ -11,11 +11,11 @@ cd vcpkg
 ```
 For x64 builds:
 ```
-./vcpkg install boost-json:x64-osx boost-optional:x64-osx libxml2:x64-osx zlib:x64-osx openssl:x64-osx
+./vcpkg install boost-json:x64-osx boost-optional:x64-osx libxml2:x64-osx zlib:x64-osx openssl:x64-osx libsodium:x64-osx argon2:x64-osx
 ```
 For arm64 builds:
 ```
-./vcpkg install boost-json:arm64-osx boost-optional:arm64-osx libxml2:arm64-osx zlib:arm64-osx openssl:arm64-osx
+./vcpkg install boost-json:arm64-osx boost-optional:arm64-osx libxml2:arm64-osx zlib:arm64-osx openssl:arm64-osx libsodium:arm64-osx argon2:arm64-osx
 ```
 - Xcode build tools
 ```

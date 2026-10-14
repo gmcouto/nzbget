@@ -23,47 +23,43 @@
 #include <cstdint>
 #include <cstddef>
 #include <mutex>
-#include <vector>
 #include <string>
 #include <functional>
 
-// Bounded thread-safe job-owned Argon2id master-key cache.
+// Single-entry job-owned Argon2id master-key cache.
 // Deriving a 64 MiB Argon2id key costs ~15 ms per article; a 1000-article
 // encrypted release would otherwise repeat the identical KDF per article.
 // The cache is owned by NzbInfo (one per download job) so parallel
-// ArticleDownloader threads share derived keys for the same salt, and the
-// keys are zeroized when the job's NzbInfo is destroyed.
+// ArticleDownloader threads share the derived key (the lock is held across
+// the KDF: single-flight), and the key is zeroized when the job's NzbInfo
+// is destroyed.
 class YEncKeyCache
 {
 public:
-	// Maximum salts cached per job; a job typically has exactly one salt.
-	static constexpr size_t MAX_CACHED_SALTS = 16;
-
 	YEncKeyCache() = default;
 	YEncKeyCache(const YEncKeyCache&) = delete;
 	YEncKeyCache& operator=(const YEncKeyCache&) = delete;
-	virtual ~YEncKeyCache();
+	~YEncKeyCache();
 
-	// Returns true and copies the 32-byte key if the salt is cached.
-	bool GetKey(const uint8_t salt[16], uint8_t outKey[32], const std::string& password = "");
-
-	// Inserts or updates the cached key for the salt; evicts (zeroizing) the
-	// oldest entry when the cache is full.
-	void PutKey(const uint8_t salt[16], const uint8_t key[32], const std::string& password = "");
-
-	// Single-flight derivation; a password edit cannot reuse the old key.
-	virtual bool GetOrDeriveKey(const uint8_t salt[16], const std::string& password,
+	// Single-flight derivation; returns true and copies the 32-byte key.
+	// The lock is held across the derive callback, so N parallel downloads
+	// run the Argon2id KDF exactly once. A password edit cannot reuse the
+	// old key: the entry is keyed by salt + password hash.
+	bool GetOrDeriveKey(const uint8_t salt[16], const std::string& password,
 		uint8_t outKey[32], const std::function<bool(uint8_t*)>& derive);
 
-	// Zeroizes and drops all cached keys (password change / job teardown).
+	// Zeroizes and drops the cached key (password change / job teardown).
 	void Clear();
 
 #ifdef NZBGET_TESTING_HOOKS
 	// Observe cache occupancy without exposing it in production.
-	size_t Size() { std::lock_guard<std::recursive_mutex> lock(m_mutex); return m_entries.size(); }
+	size_t Size() { std::lock_guard<std::mutex> lock(m_mutex); return m_filled ? 1 : 0; }
 #endif
 
 private:
+	// Zeroizes the entry; caller must hold m_mutex.
+	void Zeroize();
+
 	struct Entry
 	{
 		uint8_t salt[16] = {0};
@@ -71,8 +67,9 @@ private:
 		uint8_t passwordHash[32] = {0};
 	};
 
-	std::recursive_mutex m_mutex;
-	std::vector<Entry> m_entries;
+	std::mutex m_mutex;
+	bool m_filled = false;
+	Entry m_entry;
 };
 
 #endif // YENCKEYCACHE_H

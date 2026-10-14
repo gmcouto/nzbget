@@ -10,7 +10,9 @@
     - [libxml2](https://gitlab.gnome.org/GNOME/libxml2/-/wikis/home)
     - [Boost.JSON](https://github.com/boostorg/json)
     - [Boost.Asio](https://github.com/boostorg/asio)
-    
+    - [libsodium](https://github.com/jedisct1/libsodium)
+    - [libargon2](https://github.com/P-H-C/phc-winner-argon2)
+      
 > If you face issues with Boost Libraries on your system, you can skip it - CMake will take care of it.
 
 - And the following libraries are optional:
@@ -38,7 +40,7 @@ download the libraries at the given URLs and compile them (see hints below).
 
 ### Debian:  
 ```bash
-apt install cmake build-essential libncurses-dev libssl-dev libxml2-dev zlib1g-dev
+apt install cmake build-essential libncurses-dev libssl-dev libxml2-dev zlib1g-dev libsodium-dev libargon2-dev
 ```
   - Debian 12 (bookworm)
 ```bash
@@ -56,12 +58,12 @@ apt install clang-tidy
 ```
 ### FreeBSD: 
 ```bash
-pkg install cmake ncurses openssl libxml2 zlib boost-libs
+pkg install cmake ncurses openssl libxml2 zlib boost-libs libsodium libargon2
 ```
 ### macOS:
 ```bash
 xcode-select --install
-brew install cmake ncurses openssl libxml2 zlib boost
+brew install cmake ncurses openssl libxml2 zlib boost libsodium argon2
 ```
 
 ## 4. Installation on POSIX

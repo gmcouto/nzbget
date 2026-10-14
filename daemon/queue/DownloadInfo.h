@@ -197,6 +197,7 @@ public:
 	void SetPartialChanged(bool partialChanged) { m_partialChanged = partialChanged; }
 	bool GetForceDirectWrite() { return m_forceDirectWrite; }
 	void SetForceDirectWrite(bool forceDirectWrite) { m_forceDirectWrite = forceDirectWrite; }
+	bool DirectWriteActive();
 	EPartialState GetPartialState() { return m_partialState; }
 	void SetPartialState(EPartialState partialState) { m_partialState = partialState; }
 	uint32 GetCrc() { return m_crc; }

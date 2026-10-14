@@ -897,6 +897,73 @@ BOOST_AUTO_TEST_CASE(PlaintextLine1RejectedBeforeKeyDerivationTest)
 	}
 }
 
+BOOST_AUTO_TEST_CASE(OversizedLine1RejectedBeforeFf1Test)
+{
+	// Control Std v1.2 §9 (Article-Bounded Memory): a receiver MAY reject an
+	// article above its local limit before decryption. FF1 decryption is
+	// quadratic in the line length (the round PRF converts the whole half to
+	// a BIGNUM per round), so a hostile multi-megabyte Line 1 must be
+	// rejected before it reaches FF1 instead of tying up a download thread.
+	YEncKeyCache keyCache;
+	YEncDecryptor encDec("test123", &keyCache);
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+
+	// 64 KiB + 1 of alphabet bytes (no 0x00/0x0A/0x0D) after the 20-byte
+	// bootstrap: valid length/framing for the wire path but over the cap.
+	std::string wire = "1a2b3c4d5e6f7890abcdef123456789000000001";
+	wire += std::string(YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE + 1 - 20, 'a');
+	wire += "\r\n.\r\n";
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	// Rejection must happen before any key derivation: no salt was cached.
+	BOOST_CHECK_EQUAL(keyCache.Size(), 0u);
+
+	// Sanity: a Line 1 just below the cap passes the cap check and derives
+	// and caches the master key before failing later in FF1 (garbage
+	// ciphertext) — proving the cap itself is not what failed the second
+	// article.
+	Decoder decoder2;
+	decoder2.SetDecryptor(&encDec);
+	std::string wire2 = "1a2b3c4d5e6f7890abcdef123456789000000001";
+	wire2 += std::string(4096, 'a');
+	wire2 += "\r\n.\r\n";
+	decoder2.DecodeBuffer(wire2.data(), static_cast<int>(wire2.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder2.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	BOOST_CHECK_EQUAL(keyCache.Size(), 1u);
+}
+
+// Control Std v1.2 §9 (Article-Bounded Memory): the cap bounds EVERY
+// control-line decryption, not just Line 1 — RestoreControlLines also
+// FF1-decrypts =ypart, =yencryption and the footer, and a hostile oversized
+// non-Line-1 control line must be rejected before reaching FF1.
+BOOST_AUTO_TEST_CASE(OversizedNonLine1ControlLineRejectedBeforeFf1Test)
+{
+	// Line 1 is a valid encrypted =ybegin; line 2 (the =yencryption control
+	// line position) is oversized beyond the cap.
+	const std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	YEncDecryptor encDec("test123");
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>("=ybegin line=128 size=16 name=file.bin"), 34,
+		1, 1, true, salt.data(), wireLine1)),
+		static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wire;
+	wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size()).append("\r\n");
+	wire.append(YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE + 1, 'a').append("\r\n.\r\n");
+
+	YEncKeyCache keyCache;
+	YEncDecryptor encDec2("test123", &keyCache);
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec2);
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	// Line 1 decrypted fine (its key was derived and cached); the failure is
+	// the oversized line 2, rejected by the cap before reaching FF1.
+	BOOST_CHECK_EQUAL(keyCache.Size(), 1u);
+}
+
 // The restored block fed back through DecodeBuffer must not be
 // dot-unstuffed a second time — a restored yEnc data line beginning with '.'
 // (wire ct byte 0x04) or with '..' (ct bytes 0x04 0x04) must decode
@@ -1232,27 +1299,6 @@ BOOST_AUTO_TEST_CASE(EncryptedWireBadCrcFailClosedTest)
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
-BOOST_AUTO_TEST_CASE(RapidYencDecodeExNonRawEquivalenceTest)
-{
-	// Supported rapidyenc_decode_ex(0, ...) must produce identical output
-	// to non-raw decoding without stripping leading dots (since restored
-	// encrypted wire blocks have already been unstuffed once).
-	std::string payload = "Hello World! ..leading dot line\r\n=another line\r\n";
-	std::string encoded = yEncEncode(payload);
-
-	std::vector<char> dest1(payload.size() + 256, 0);
-	std::vector<char> dest2(payload.size() + 256, 0);
-
-	int state1 = 0;
-	size_t written1 = rapidyenc_decode_ex(0, encoded.data(), dest1.data(), encoded.size(),
-		reinterpret_cast<RapidYencDecoderState*>(&state1));
-
-	// When is_raw=0, rapidyenc does not perform NNTP dot-unstuffing.
-	// Verify written bytes match expected decoded payload:
-	BOOST_CHECK_EQUAL(written1, payload.size());
-	BOOST_CHECK_EQUAL(std::string(dest1.data(), written1), payload);
-}
-
 namespace
 {
 
@@ -1445,7 +1491,7 @@ BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosed)
 	}
 }
 
-// Body Std v1.2 / NG-1 investigation: an encrypted restored block whose
+// Body Std v1.2: an encrypted restored block whose
 // yEnc body contains an interior data line consisting of a single '.' (sent
 // dot-stuffed as '..' per RFC 3977 §3.1.1) followed by more data lines must
 // decode in full. DecodeYenc's wire-mode scan for the transport terminator

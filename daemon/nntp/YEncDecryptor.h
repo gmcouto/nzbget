@@ -37,6 +37,17 @@ public:
 		Error
 	};
 
+	// Hostile-control-line cap (Control Std v1.2 §9, Article-Bounded Memory):
+	// Any control line larger than this is rejected before FF1 decryption,
+	// which is quadratic in the line length (measured: 1 KiB ≈ 5 ms, 8 KiB ≈
+	// 315 ms, 32 KiB ≈ 5 s on the reference ARM core). Legit control lines
+	// (=ybegin, =ypart, =yencryption, =yend) are all short; 8 KiB leaves an
+	// order of magnitude of headroom over the longest real-world filename
+	// while bounding a hostile line to well under a second of CPU.
+	// Enforced inside DecryptControlLine so every control-line decryption
+	// (Line 1, =ypart, =yencryption, footer) is bounded.
+	static constexpr size_t MAX_LINE1_PLAINTEXT_SIZE = 8 * 1024;
+
 	explicit YEncDecryptor(const std::string& password = "", YEncKeyCache* keyCache = nullptr);
 	~YEncDecryptor();
 

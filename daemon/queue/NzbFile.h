@@ -70,6 +70,8 @@ private:
 	bool m_hasYEncVersion = false;
 	bool m_hasYEncCipher = false;
 	bool m_yencEncryptedMeta = false;
+	bool m_yencVersionPresent = false;
+	bool m_yencCipherPresent = false;
 	std::string m_yencVersionMeta;
 	std::string m_yencCipherMeta;
 	std::string m_currentElement;

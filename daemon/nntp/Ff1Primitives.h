@@ -23,7 +23,7 @@
 // FF1 building blocks shared between the production FF1 decrypt path
 // (YEncDecryptor.cpp) and the test-only FF1 encrypt helper
 // (YEncEncryptTestHelper.cpp). Moved here so the radix-253 mapping, BIGNUM
-// radix conversion, and CBC-MAC primitives exist exactly once .
+// radix conversion, and CBC-MAC primitives exist exactly once.
 //
 // The FF1 round function itself stays split: only the decrypt direction ships
 // in production; the encrypt direction is compiled into the test target only

@@ -918,7 +918,7 @@ void QueueCoordinator::DeleteFileInfo(DownloadQueue* downloadQueue, FileInfo* fi
 
 void QueueCoordinator::DiscardTempFiles(FileInfo* fileInfo)
 {
-	if (fileInfo->GetNzbInfo()->IsYEncEncrypted() || (!g_Options->GetDirectWrite() && !fileInfo->GetForceDirectWrite()))
+	if (fileInfo->GetNzbInfo()->IsYEncEncrypted() || !fileInfo->DirectWriteActive())
 	{
 		for (ArticleInfo* pa : fileInfo->GetArticles())
 		{

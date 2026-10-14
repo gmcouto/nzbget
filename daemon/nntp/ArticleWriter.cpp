@@ -99,7 +99,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			{
 				Guard guard = m_fileInfo->GuardOutputFile();
 				outputInitialized = m_fileInfo->GetOutputInitialized();
-				if (!g_Options->GetDirectWrite() || isYEncEncrypted)
+				if (m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || !g_Options->GetDirectWrite())
 				{
 					m_fileInfo->SetOutputInitialized(true);
 				}
@@ -113,7 +113,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			}
 		}
 
-		if (g_Options->GetDirectWrite() && !isYEncEncrypted)
+		if (!m_fileInfo->GetNzbInfo()->IsYEncEncrypted() && g_Options->GetDirectWrite())
 		{
 			Guard guard = m_fileInfo->GuardOutputFile();
 			if (!m_fileInfo->GetOutputInitialized())
@@ -129,7 +129,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 
 	// allocate cache buffer
 	if (g_Options->GetArticleCache() > 0 && !g_Options->GetRawArticle() &&
-		(!g_Options->GetDirectWrite() || isYEncEncrypted || m_format == Decoder::efYenc))
+		(!g_Options->GetDirectWrite() || m_fileInfo->GetNzbInfo()->IsYEncEncrypted() || m_format == Decoder::efYenc))
 	{
 		// Encrypted releases must not bypass the cache with direct writes: the
 		// final-file commitment happens only after authentication in
@@ -155,7 +155,7 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 			return true;
 		}
 
-		bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+		bool directWrite = m_fileInfo->DirectWriteActive() && m_format == Decoder::efYenc;
 		const char* outFilename = directWrite ? m_outputFilename.c_str() : m_tempFilename.c_str();
 		if (!m_outFile.Open(outFilename, directWrite ? DiskFile::omReadWrite : DiskFile::omWrite))
 		{
@@ -187,12 +187,10 @@ bool ArticleWriter::GetSkipDiskWrite()
 
 bool ArticleWriter::Write(char* buffer, int len)
 {
-	if (IsEncryptedRelease())
-	{
-		// Enforce Zero-Output Guarantee: never write unauthenticated ciphertext to disk or cache
-		return true;
-	}
-
+	// Encrypted releases never reach this path: the wire path buffers whole
+	// articles and DecodeBuffer returns 0 until authentication succeeds, so
+	// decrypted bytes are committed via CommitAuthenticatedData only
+	// (Body Std v1.2 §8, Zero-Output Guarantee).
 	if (!g_Options->GetRawArticle())
 	{
 		m_articlePtr += len;
@@ -221,9 +219,8 @@ bool ArticleWriter::Write(char* buffer, int len)
 	return m_outFile.Write(buffer, len) > 0;
 }
 
-bool ArticleWriter::CommitAuthenticatedData(const uint8_t* data, size_t length, int64_t offset)
+bool ArticleWriter::CommitAuthenticatedData(const uint8_t* data, size_t length)
 {
-	m_articleOffset = offset;
 	m_articlePtr = static_cast<int>(length);
 
 	if (length == 0)
@@ -276,8 +273,7 @@ void ArticleWriter::Finish(bool success)
 		return;
 	}
 
-	bool isYEncEncrypted = IsEncryptedRelease();
-	bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_format == Decoder::efYenc;
+	bool directWrite = m_fileInfo->DirectWriteActive() && m_format == Decoder::efYenc;
 
 	if (!g_Options->GetRawArticle())
 	{
@@ -384,7 +380,7 @@ void ArticleWriter::BuildOutputFilename()
 	m_articleInfo->SetResultFilename(filename.c_str());
 	m_tempFilename = filename + ".tmp";
 
-	if (!m_fileInfo->GetNzbInfo()->IsYEncEncrypted() && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()))
+	if (m_fileInfo->DirectWriteActive())
 	{
 		Guard guard = m_fileInfo->GuardOutputFile();
 		const std::string& outputFilename = m_fileInfo->GetOutputFilename();
@@ -417,8 +413,7 @@ void ArticleWriter::CompleteFileParts()
 	debug("ArticleFilename: %s", m_fileInfo->GetFilename());
 
 	// 1. Gather context & configuration
-	bool isYEncEncrypted = IsEncryptedRelease();
-	bool directWrite = !isYEncEncrypted && (g_Options->GetDirectWrite() || m_fileInfo->GetForceDirectWrite()) && m_fileInfo->GetOutputInitialized();
+	bool directWrite = m_fileInfo->DirectWriteActive() && m_fileInfo->GetOutputInitialized();
 	bool cached = m_fileInfo->GetCachedArticles() > 0;
 
 	std::string nzbDestDir;
@@ -809,8 +804,7 @@ void ArticleWriter::FlushCache()
 {
 	detail("Flushing cache for %s", m_infoName.c_str());
 
-	bool isYEncEncrypted = IsEncryptedRelease();
-	bool directWrite = g_Options->GetDirectWrite() && !isYEncEncrypted && m_fileInfo->GetOutputInitialized();
+	bool directWrite = !m_fileInfo->GetNzbInfo()->IsYEncEncrypted() && g_Options->GetDirectWrite() && m_fileInfo->GetOutputInitialized();
 	DiskFile outfile;
 	bool needBufFile = false;
 	int flushedArticles = 0;

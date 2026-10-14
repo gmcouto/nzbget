@@ -25,6 +25,10 @@ jobs:
         $ProgressPreference = "SilentlyContinue"
         Invoke-WebRequest https://github.com/nzbgetcom/build-files/releases/download/v5.0/vcpkg-windows-x64.zip -OutFile "${{ github.workspace }}\vcpkg.zip"
         Expand-Archive -Path "${{ github.workspace }}\vcpkg.zip" -DestinationPath "${{ github.workspace }}"
+        # The prebuilt vcpkg cache does not carry the crypto libraries that are
+        # hard dependencies of the yEnc encryption support (Std v1.2); add them.
+        & "${{ github.workspace }}\vcpkg\vcpkg.exe" install libsodium --triplet x64-windows-static
+        & "${{ github.workspace }}\vcpkg\vcpkg.exe" install argon2 --triplet x64-windows-static
         Invoke-Expression "windows\build-nzbget.ps1 -DownloadUnpackers"
         Copy-Item "C:\nzbget\image\64\unrar.exe" -Destination "C:\Windows\System32"
         Copy-Item "C:\nzbget\image\64\7za.exe" -Destination "C:\Windows\System32\7z.exe"
@@ -164,7 +168,7 @@ jobs:
         operating_system: openbsd
         version: '7.9'
         run: |
-          sudo pkg_add git cmake libxml boost unrar p7zip
+          sudo pkg_add git cmake libxml boost unrar p7zip libsodium argon2
           mkdir build
           cd build
           cmake .. -DBUILD_ONLY_TESTS=ON -DCURSES_INCLUDE_PATH=/usr/include
@@ -192,7 +196,7 @@ jobs:
         operating_system: freebsd
         version: '14.2'
         run: |
-          sudo pkg install -y git cmake libxml2 boost-all unrar 7-zip
+          sudo pkg install -y git cmake libxml2 boost-all unrar 7-zip libsodium libargon2
           mkdir build
           cd build
           cmake .. -DBUILD_ONLY_TESTS=ON -DCURSES_INCLUDE_PATH=/usr/include
@@ -293,7 +297,7 @@ jobs:
         operating_system: openbsd
         version: '7.9'
         run: |
-          sudo pkg_add git cmake libxml boost
+          sudo pkg_add git cmake libxml boost libsodium argon2
           mkdir build
           cd build
           cmake .. -DCURSES_INCLUDE_PATH=/usr/include

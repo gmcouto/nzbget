@@ -58,6 +58,13 @@ Build options:
 - corex: default value `core4`
     - multicore make (x is a number of threads)
 
+# Third-party libraries
+
+The script builds ncurses, zlib, libxml2, OpenSSL, Boost, **libsodium** and
+**libargon2** from source for every target; both crypto libraries are hard
+dependencies of the yEnc encryption support (Body/Control Std v1.2) and are
+linked statically together with the rest of the dependency set.
+
 # Output files
 
 - build/*.tar.gz - one file per architecture - binary package

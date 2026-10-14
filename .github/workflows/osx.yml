@@ -21,6 +21,9 @@ jobs:
       run: |
         curl -L https://github.com/nzbgetcom/build-files/releases/download/v3.0/vcpkg-osx-x64-mojave.zip -o $HOME/vcpkg.tar.gz
         tar zxf $HOME/vcpkg.tar.gz -C $HOME
+        # The prebuilt vcpkg cache does not carry the crypto libraries that are
+        # hard dependencies of the yEnc encryption support (Std v1.2); add them.
+        $HOME/vcpkg/vcpkg install libsodium:x64-osx argon2:x64-osx
 
     - name: Build
       run: |
@@ -65,6 +68,9 @@ jobs:
       run: |
         curl -L https://github.com/nzbgetcom/build-files/releases/download/v5.0/vcpkg-osx-universal.tar.gz -o $HOME/vcpkg.tar.gz
         tar zxf $HOME/vcpkg.tar.gz -C $HOME
+        # The prebuilt vcpkg cache does not carry the crypto libraries that are
+        # hard dependencies of the yEnc encryption support (Std v1.2); add them.
+        $HOME/vcpkg/vcpkg install libsodium:x64-osx argon2:x64-osx libsodium:arm64-osx argon2:arm64-osx
 
     - name: Build
       run: bash osx/build-nzbget.sh universal ${{ env.BUILD_TYPES }} ${{ env.BUILD_TESTING }}

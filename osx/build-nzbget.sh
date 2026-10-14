@@ -95,7 +95,7 @@ for CONFIG in $CONFIGS; do
         mkdir -p $NZBGET_PATH
         mkdir -p $BUILD_PATH
 
-        export LIBS="-liconv -lncurses $LIB_PATH/libboost_json.a $LIB_PATH/libboost_filesystem.a $LIB_PATH/libxml2.a $LIB_PATH/libz.a $LIB_PATH/libssl.a $LIB_PATH/libcrypto.a $LIB_PATH/liblzma.a"
+        export LIBS="-liconv -lncurses $LIB_PATH/libboost_json.a $LIB_PATH/libboost_filesystem.a $LIB_PATH/libxml2.a $LIB_PATH/libz.a $LIB_PATH/libssl.a $LIB_PATH/libcrypto.a $LIB_PATH/liblzma.a $LIB_PATH/libsodium.a $LIB_PATH/libargon2.a"
         export INCLUDES="$INCLUDE_PATH/;$INCLUDE_PATH/libxml2/"
 
         # copy macOS project to package

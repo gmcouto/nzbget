@@ -20,6 +20,8 @@ Also required are:
    - [libxml2](https://gitlab.gnome.org/GNOME/libxml2/-/wikis/home)
    - [Boost.JSON](https://github.com/boostorg/json)
    - [Boost.Asio](https://github.com/boostorg/asio)
+   - [libsodium](https://github.com/jedisct1/libsodium)
+   - [libargon2](https://github.com/P-H-C/phc-winner-argon2)
 
 For tests:
    - [Boost.Test](https://github.com/boostorg/test)
@@ -41,6 +43,8 @@ vcpkg install libxml2:x64-windows-static
 vcpkg install zlib:x64-windows-static
 vcpkg install boost-json:x64-windows-static
 vcpkg install boost-asio:x64-windows-static
+vcpkg install libsodium:x64-windows-static
+vcpkg install argon2:x64-windows-static
 ```
   - For tests:
 ```powershell

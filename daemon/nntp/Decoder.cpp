@@ -94,23 +94,15 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 		return len;
 	}
 
-	// Control Std v1.2 §9 "Transport boundary": consumers MUST
-	// dot-unstuff before line splitting / bootstrap extraction. The NNTP
-	// connection layer delivers raw socket bytes, so this decoder is the
-	// single unstuffing owner. RFC 3977 §3.1.1: a '.' at line start followed
-	// by '.' (or by CRLF) is the escape — strip exactly one dot; "\r\n.\r\n"
-	// is the terminator itself (not unstuffed).
-	// The restored block produced by ProcessRestoredBlock has
-	// already been unstuffed (its source chunks went through UnstuffInPlace
-	// when they were accumulated into m_wireBuffer). Feeding it through the
-	// unstuffing pass again would corrupt yEnc data lines that legitimately
-	// begin with '.', so such callers pass alreadyUnstuffed=true. Exactly one
-	// unstuffing pass per byte of article, ever.
-	// Ordinary (non-wire) articles are not unstuffed here: rapidyenc_decode_incremental
-	// handles raw NNTP dot-unstuffing in situ, and a second pass would corrupt
-	// data lines starting with '.'.
+	// Control Std v1.2 §9 "Transport boundary": this decoder is the single
+	// dot-unstuffing owner (RFC 3977 §3.1.1: strip exactly one line-start
+	// escape dot; "\r\n.\r\n" is the terminator itself). Ordinary articles
+	// are not unstuffed here — rapidyenc_decode_incremental does it in situ
+	// — and the restored block from ProcessRestoredBlock went through
+	// UnstuffInPlace when its chunks were accumulated, so such callers pass
+	// alreadyUnstuffed=true: exactly one unstuffing pass per byte, ever.
 	const bool wireCandidate = !m_wireProcessed &&
-		(m_encryptedWireMode || (m_format == efUnknown && m_decryptor && !m_decryptor->GetPassword().empty()));
+		(m_encryptedWireMode || (m_format == efUnknown && m_decryptor));
 	if (wireCandidate && !alreadyUnstuffed)
 	{
 		TrackWireTerminator(buffer, len);
@@ -158,6 +150,24 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				if (!candidateLine1.empty() && candidateLine1[0] == '.')
 				{
 					candidateLine1.erase(0, 1);
+				}
+				// An oversized Line 1 is rejected before FF1 (the cap and the
+				// rationale live in YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE;
+				// DecryptControlLine rejects it, this early check avoids
+				// buffering pointless work): the FF1 round PRF works on the
+				// whole line per round, so a multi-megabyte hostile line
+				// would keep a download thread busy for hours (quadratic in
+				// line length across the 10 Feistel rounds). The
+				// Article-Bounded Memory clause (Control Std v1.2 §9) lets a
+				// receiver enforce local limits before allocation or
+				// decryption.
+				if (candidateLine1.size() > YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE)
+				{
+					m_authFailed = true;
+					m_wireBuffer.clear();
+					m_wireProcessed = true;
+					m_eof = true;
+					return 0;
 				}
 				// Plaintext framing is rejected before key derivation so a
 				// garbage "salt" never costs an Argon2id run.

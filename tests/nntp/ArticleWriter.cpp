@@ -133,7 +133,7 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterCommitTest)
 		0x72, 0x6c, 0x64, 0x2e, 0x74, 0x78, 0x74, 0xff
 	};
 
-	bool commitOk = writer.CommitAuthenticatedData(plainData.data(), plainData.size(), 16);
+	bool commitOk = writer.CommitAuthenticatedData(plainData.data(), plainData.size());
 	BOOST_CHECK(commitOk);
 
 	writer.Finish(true);
@@ -342,7 +342,7 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "zero_byte.dat", 0, 0, 0));
 
 	// CommitAuthenticatedData for 0-byte authenticated payload must succeed
-	bool commitOk = writer.CommitAuthenticatedData(nullptr, 0, 0);
+	bool commitOk = writer.CommitAuthenticatedData(nullptr, 0);
 	BOOST_CHECK(commitOk);
 
 	writer.Finish(true);
@@ -490,9 +490,42 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
 	stdfs::remove_all(dir);
 }
 
+BOOST_AUTO_TEST_CASE(DiscardTempFilesResumesCompletedOrdinaryDirectWrite)
+{
+	// Regression (upstream parity): DiscardTempFiles must keep the upstream
+	// `!GetForceDirectWrite()` term on the output-delete branch. An ordinary
+	// (unencrypted) file resumed with psCompleted has ForceDirectWrite=true;
+	// deleting it from the queue then must NOT delete the shared output file,
+	// while an ordinary fresh direct-write file (ForceDirectWrite=false) still
+	// has its stale output file deleted as upstream does.
+	stdfs::path dir = stdfs::temp_directory_path() / "nzbget_discard_ordinary_dw";
+	stdfs::create_directories(dir);
+	Options::CmdOptList opts;
+	opts.push_back("DirectWrite=yes");
+	Options options(&opts, nullptr);
+	Options* oldOptions = g_Options;
+	g_Options = &options;
+	static QueueCoordinator* coordinator = new QueueCoordinator();
+	for (bool forceDirectWrite : {false, true})
+	{
+		NzbInfo nzb;
+		FileInfo file;
+		file.SetNzbInfo(&nzb);
+		file.SetForceDirectWrite(forceDirectWrite);
+		std::string output = (dir / (forceDirectWrite ? "resumed.out" : "fresh.out"));
+		std::ofstream(output) << "output bytes";
+		file.SetOutputFilename(output);
+		BOOST_CHECK(stdfs::exists(output));
+		coordinator->DiscardTempFiles(&file);
+		BOOST_CHECK_EQUAL(stdfs::exists(output), forceDirectWrite);
+	}
+	g_Options = oldOptions;
+	stdfs::remove_all(dir);
+}
+
 BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
 {
-	// NG-4 investigation: on encrypted auth failure both DiscardStagedData and
+	// On encrypted auth failure both DiscardStagedData and
 	// Finish(false) delete m_tempFilename/m_resultFilename. Ownership check:
 	// the deleted paths are this article's own per-part scratch paths
 	// (<TempDir>/<fileId>.<part>[.tmp]); a sibling article's committed result

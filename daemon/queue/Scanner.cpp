@@ -621,16 +621,7 @@ bool Scanner::AddFileToQueue(
 		error("Could not add collection %s to queue", basename);
 	}
 
-	CString bakname2;
-	if (!FileSystem::RenameBak(filename, ok ? "queued" : "error", false, bakname2))
-	{
-		ok = false;
-		error("Could not rename file %s to %s: %s", filename, *bakname2,
-			*FileSystem::GetLastErrorMessage());
-	}
-
 	std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
-	nzbInfo->SetQueuedFilename(bakname2);
 
 	if (autoCategory)
 	{
@@ -667,11 +658,10 @@ bool Scanner::AddFileToQueue(
 
 	nzbInfo->GetParameters()->CopyFrom(parameters);
 
-	// If this release is encrypted, ensure an effective password exists
-	// after merging parameters. If parameters provided *Unpack:Password (e.g. from
-	// an API/scan caller) or category script parameters, that password must satisfy
-	// the encrypted release requirement. Conversely, if no effective password
-	// exists from ANY source, fail before adding to the queue.
+	// Effective-password gate: runs after the parameter merge (only then are
+	// all sources known) and before the backup rename so a rejected encrypted
+	// NZB is backed up as .error like every other parse failure
+	// (Body Std v1.2 §5: METADATA_VALIDATION is a structural parse failure).
 	if (nzbInfo->IsYEncEncrypted())
 	{
 		const char* effectivePwd = nzbInfo->GetPassword();
@@ -683,6 +673,16 @@ bool Scanner::AddFileToQueue(
 				"Error parsing nzb-file %s: METADATA_VALIDATION: yenc_encrypted release has no password", basename));
 		}
 	}
+
+	CString bakname2;
+	if (!FileSystem::RenameBak(filename, ok ? "queued" : "error", false, bakname2))
+	{
+		ok = false;
+		error("Could not rename file %s to %s: %s", filename, *bakname2,
+			*FileSystem::GetLastErrorMessage());
+	}
+
+	nzbInfo->SetQueuedFilename(bakname2);
 
 	for (FileInfo* fileInfo : nzbInfo->GetFileList())
 	{

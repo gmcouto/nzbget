@@ -30,9 +30,6 @@
 #include <openssl/bn.h>
 
 #include <cstring>
-#include <cmath>
-#include <algorithm>
-#include <stdexcept>
 #include <memory>
 
 using Ff1::ByteToNumeral;
@@ -317,23 +314,17 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 		return Status::Error;
 	}
 
-	std::vector<uint8_t> ctAndTag(cipherLen + 16);
-	if (cipherLen > 0 && ciphertext != nullptr)
-	{
-		memcpy(ctAndTag.data(), ciphertext, cipherLen);
-	}
-	memcpy(ctAndTag.data() + cipherLen, tag, 16);
-
+	// Detached AEAD (libsodium): ciphertext and tag passed separately, so no
+	// article-sized ct||tag copy is needed (Body Std v1.2 §4: tag is a
+	// 16-byte independent field of =yencryption).
 	outPlaintext.resize(cipherLen);
-	unsigned long long decryptedLen = 0;
-	int res = crypto_aead_xchacha20poly1305_ietf_decrypt(
-		outPlaintext.data(), &decryptedLen,
-		nullptr,
-		ctAndTag.data(), ctAndTag.size(),
+	int res = crypto_aead_xchacha20poly1305_ietf_decrypt_detached(
+		cipherLen > 0 ? outPlaintext.data() : nullptr, nullptr,
+		ciphertext, cipherLen,
+		tag,
 		aad, aadLen,
 		nonce, m_cachedMasterKey.data());
 
-	sodium_memzero(ctAndTag.data(), ctAndTag.size());
 	sodium_memzero(nonce, sizeof(nonce));
 
 	if (res != 0)
@@ -343,7 +334,6 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 		return Status::AuthFailed;
 	}
 
-	outPlaintext.resize(decryptedLen);
 	return Status::Ok;
 }
 
@@ -403,6 +393,20 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	outPlaintext.clear();
 
 	if (m_sodiumInitFailed)
+	{
+		return Status::Error;
+	}
+
+	// Hostile-Line cap (Control Std v1.2 §9, Article-Bounded Memory):
+	// FF1 decryption is quadratic in the line length (the round PRF
+	// converts the whole half to a BIGNUM each of the 10 rounds), so a
+	// multi-megabyte hostile line would tie up a download thread for
+	// hours. Reject before key derivation/FF1; every legitimate control
+	// line is short (Line 1 is "=ybegin line=<n> size=<n> name=<filename>",
+	// even pathological names stay far below the cap). All encrypted
+	// control lines go through here, so the cap bounds every FF1
+	// decryption, not just Line 1.
+	if (wireLen > MAX_LINE1_PLAINTEXT_SIZE)
 	{
 		return Status::Error;
 	}

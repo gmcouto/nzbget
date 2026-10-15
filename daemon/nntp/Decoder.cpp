@@ -215,16 +215,6 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 					m_eof = true;
 					return 0;
 				}
-				// Plaintext framing is rejected before key derivation so a
-				// garbage "salt" never costs an Argon2id run.
-				if (candidateLine1.starts_with("=ybegin ") || candidateLine1.starts_with("begin "))
-				{
-					m_authFailed = true;
-					m_wireBuffer.clear();
-					m_wireProcessed = true;
-					m_eof = true;
-					return 0;
-				}
 				std::vector<uint8_t> ptLine1;
 				std::vector<uint8_t> salt1;
 				uint32_t extractedIndex = 0;

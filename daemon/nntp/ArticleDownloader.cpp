@@ -462,7 +462,8 @@ ArticleDownloader::EStatus ArticleDownloader::Download()
 
 	if (status == adRunning)
 	{
-		FreeConnection(true);
+		bool keepConnected = !m_decoder.GetDecryptor() || m_decoder.IsWireTerminated();
+		FreeConnection(keepConnected);
 		status = DecodeCheck();
 	}
 

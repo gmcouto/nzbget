@@ -118,14 +118,6 @@ jobs:
         $ProgressPreference = "SilentlyContinue"
         Invoke-WebRequest https://github.com/nzbgetcom/build-files/releases/download/v10.0/nzbget-windows-tools.zip -OutFile "${{ github.workspace }}\tools.zip"
         Expand-Archive -Path "${{ github.workspace }}\tools.zip" -DestinationPath C:\
-        # The prebuilt vcpkg cache does not carry the crypto libraries that are
-        # hard dependencies of the yEnc encryption support (Std v1.2); add them
-        # for both triplets (the installer job rebuilds nothing but keeps the
-        # same vcpkg root the build-bin job used).
-        & C:\vcpkg\vcpkg.exe install libsodium --triplet x64-windows-static
-        & C:\vcpkg\vcpkg.exe install argon2 --triplet x64-windows-static
-        & C:\vcpkg\vcpkg.exe install libsodium --triplet x86-windows-static
-        & C:\vcpkg\vcpkg.exe install argon2 --triplet x86-windows-static
         Invoke-Expression "windows\build-nzbget.ps1 -DownloadUnpackers"
         New-Item build -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
         Copy-Item Release* build -Recurse -ErrorAction SilentlyContinue

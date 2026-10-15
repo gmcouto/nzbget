@@ -72,6 +72,8 @@ public:
 	const char* GetArticleFilename() { return m_articleFilename.c_str(); }
 
 	void SetDecryptor(YEncDecryptor* decryptor) { m_decryptor = decryptor; }
+	YEncDecryptor* GetDecryptor() const { return m_decryptor; }
+	bool IsWireTerminated() const { return m_wireTerminated; }
 	bool IsEncrypted() const { return m_encrypted; }
 	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
 

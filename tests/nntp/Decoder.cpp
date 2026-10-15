@@ -1937,4 +1937,56 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockInteriorDotLineTest)
 		pt.begin(), pt.end());
 }
 
+// NZ-NEXT-1 / T05: a synthetic early EOF (encrypted-rejection path in
+// DecodeBuffer) fires before the transport terminator arrives. The decoder
+// must report that the multiline response was not fully consumed so the
+// connection owner can disconnect instead of reusing a desynchronized socket.
+// Ordinary articles always set m_wireTerminated once the terminator arrives;
+// this guard only closes the undrained encrypted-rejection gap.
+BOOST_AUTO_TEST_CASE(EncryptedEarlyRejectionReportsUnconsumedTerminatorTest)
+{
+	// 1. Plaintext =ybegin Line 1 on an encrypted job: delivered as initial chunk,
+	//    rejected before key derivation, remainder (incl. terminator) never fed.
+	{
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		std::string firstChunk =
+			"=ybegin line=128 size=16 name=test.dat\r\n";
+		decoder.DecodeBuffer(firstChunk.data(), static_cast<int>(firstChunk.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+		BOOST_CHECK(decoder.GetEof());
+		BOOST_CHECK(!decoder.IsWireTerminated());
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+
+	// 2. Invalid first chunk delivered separately; the delayed remainder with
+	//    the real terminator is never fed (mirrors an undrained socket).
+	{
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		std::string firstChunk =
+			"4b376d5839704c32715238764e34775a99999999CORRUPT_LINE_ONE_DATA\r\n";
+		decoder.DecodeBuffer(firstChunk.data(), static_cast<int>(firstChunk.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+		BOOST_CHECK(!decoder.IsWireTerminated());
+	}
+
+	// 3. Control: a fully delivered encrypted article (terminator consumed)
+	//    reports the terminator as consumed, so ordinary connection reuse is
+	//    unaffected.
+	{
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		std::string wire =
+			"4b376d5839704c32715238764e34775a99999999CORRUPT_LINE_ONE_DATA\r\n"
+			"=ypart line=1 size=10\r\ndata\r\n=yend size=4\r\n.\r\n";
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+		BOOST_CHECK(decoder.IsWireTerminated());
+	}
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -42,6 +42,8 @@
 #include <filesystem>
 #include <fstream>
 #include <cstddef>
+#include <functional>
+#include <chrono>
 
 // ArticleWriter.h (already included) declares ArticleCache and the
 // g_ArticleCache global. The cache-backed scenario below installs a real
@@ -85,34 +87,30 @@ BOOST_AUTO_TEST_CASE(CorruptedLine1BootstrapFailClosedTest)
 // NNTP, DirectWrite on/off, allocated article cache, and that a failed
 // provider's bytes never reach the article cache or final file (zero-output
 // at every sink). Replaces the former decoder-only failover assertion.
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 namespace
 {
 
 class LocalNntpServer
 {
 public:
+	using RequestHandler = std::function<void(int clientFd, const std::string& cmd, int requestNum)>;
+
 	LocalNntpServer(std::string responseArticle, std::atomic<int>* requestCounter) :
 		m_responseArticle(std::move(responseArticle)),
 		m_requestCounter(requestCounter)
 	{
-		m_listenFd = socket(AF_INET, SOCK_STREAM, 0);
-		int opt = 1;
-		setsockopt(m_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-		sockaddr_in addr = {};
-		addr.sin_family = AF_INET;
-		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-		addr.sin_port = 0;
-		if (bind(m_listenFd, (sockaddr*)&addr, sizeof(addr)) != 0 || listen(m_listenFd, 5) != 0)
-		{
-			// Test infrastructure failure: cannot start local NNTP server
-			m_port = -1;
-			m_thread = std::thread([this]() { Run(); });
-			return;
-		}
-		socklen_t len = sizeof(addr);
-		getsockname(m_listenFd, (sockaddr*)&addr, &len);
-		m_port = ntohs(addr.sin_port);
-		m_thread = std::thread([this]() { Run(); });
+		Init();
+	}
+
+	LocalNntpServer(RequestHandler handler, std::atomic<int>* requestCounter) :
+		m_requestCounter(requestCounter),
+		m_handler(std::move(handler))
+	{
+		Init();
 	}
 
 	~LocalNntpServer()
@@ -135,8 +133,31 @@ private:
 	int m_port = 0;
 	std::string m_responseArticle;
 	std::atomic<int>* m_requestCounter;
+	RequestHandler m_handler;
 	std::atomic<bool> m_stop{false};
 	std::thread m_thread;
+
+	void Init()
+	{
+		m_listenFd = socket(AF_INET, SOCK_STREAM, 0);
+		int opt = 1;
+		setsockopt(m_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+		sockaddr_in addr = {};
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		addr.sin_port = 0;
+		if (bind(m_listenFd, (sockaddr*)&addr, sizeof(addr)) != 0 || listen(m_listenFd, 5) != 0)
+		{
+			// Test infrastructure failure: cannot start local NNTP server
+			m_port = -1;
+			m_thread = std::thread([this]() { Run(); });
+			return;
+		}
+		socklen_t len = sizeof(addr);
+		getsockname(m_listenFd, (sockaddr*)&addr, &len);
+		m_port = ntohs(addr.sin_port);
+		m_thread = std::thread([this]() { Run(); });
+	}
 
 	void Run()
 	{
@@ -156,7 +177,7 @@ private:
 				continue;
 			}
 			const char welcome[] = "200 Welcome test NNTP\r\n";
-			send(clientFd, welcome, sizeof(welcome) - 1, 0);
+			send(clientFd, welcome, sizeof(welcome) - 1, MSG_NOSIGNAL);
 			char buf[4096];
 			std::string lineBuf;
 			while (!m_stop)
@@ -176,25 +197,32 @@ private:
 					if (cmd.rfind("GROUP", 0) == 0)
 					{
 						const char resp[] = "211 0 0 0 test.group\r\n";
-						send(clientFd, resp, sizeof(resp) - 1, 0);
+						send(clientFd, resp, sizeof(resp) - 1, MSG_NOSIGNAL);
 					}
 					else if (cmd.rfind("BODY", 0) == 0 || cmd.rfind("ARTICLE", 0) == 0)
 					{
-						(*m_requestCounter)++;
-						std::string resp = "222 1 " + cmd.substr(cmd.find(' ') + 1) + "\r\n";
-						resp += m_responseArticle;
-						send(clientFd, resp.data(), resp.size(), 0);
+						int reqNum = ++(*m_requestCounter);
+						if (m_handler)
+						{
+							m_handler(clientFd, cmd, reqNum);
+						}
+						else
+						{
+							std::string resp = "222 1 " + cmd.substr(cmd.find(' ') + 1) + "\r\n";
+							resp += m_responseArticle;
+							send(clientFd, resp.data(), resp.size(), MSG_NOSIGNAL);
+						}
 					}
 					else if (cmd == "QUIT")
 					{
 						const char resp[] = "205 Bye\r\n";
-						send(clientFd, resp, sizeof(resp) - 1, 0);
+						send(clientFd, resp, sizeof(resp) - 1, MSG_NOSIGNAL);
 						break;
 					}
 					else
 					{
 						const char resp[] = "500 Command unrecognized\r\n";
-						send(clientFd, resp, sizeof(resp) - 1, 0);
+						send(clientFd, resp, sizeof(resp) - 1, MSG_NOSIGNAL);
 					}
 				}
 			}
@@ -1033,6 +1061,179 @@ BOOST_AUTO_TEST_CASE(EncryptedAllProvidersExhaustedTest)
 	// - T05: content analyzer receives nothing from failed attempts
 	BOOST_CHECK_EQUAL(analyzerPtr->GetAppendCount(), 0);
 	BOOST_CHECK(analyzerPtr->GetRecorded().empty());
+
+	g_ServerPool = env.oldServerPool;
+	stdfs::remove_all(tempDir);
+	stdfs::remove_all(tempDirOpt);
+}
+
+BOOST_AUTO_TEST_CASE(EncryptedConnectionReuseAfterEarlyRejectionTest)
+{
+	// NZ-NEXT-1 / T05 regression:
+	// A primary provider delivers an invalid first line separately, followed by a
+	// delayed remainder and dot terminator. The decoder encounters early rejection
+	// and exits the download loop before consuming the transport terminator.
+	// If the connection is freed without being disconnected, a subsequent article
+	// reusing this connection reads the leftover body bytes instead of the expected
+	// NNTP command response (desynchronization).
+	//
+	// In the correct behavior:
+	// 1. The undrained connection is disconnected rather than kept connected.
+	// 2. Article 1 fails over to the backup provider and succeeds.
+	// 3. Article 2 is downloaded and succeeds on primary (re-connecting cleanly).
+	// 4. All corrupt attempts commit and analyze zero bytes.
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_reuse_nntp_test";
+	stdfs::create_directories(tempDir);
+	stdfs::path tempDirOpt = stdfs::temp_directory_path() / "nzbget_reuse_nntp_temp";
+	stdfs::create_directories(tempDirOpt);
+
+	const std::string password = "test123";
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const std::vector<uint8_t> plaintext1 = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
+	const std::vector<uint8_t> plaintext2 = YEncTest::HexToBin("5365636f6e642056616c696420417274");
+	const std::string filename1 = "reuse_art1.dat";
+	const std::string filename2 = "reuse_art2.dat";
+
+	std::string validWire1 = BuildValidEncryptedWireArticle(password, salt, 1, filename1, plaintext1);
+	std::string validWire2 = BuildValidEncryptedWireArticle(password, salt, 2, filename2, plaintext2);
+
+	std::atomic<int> primaryRequests{0};
+	std::atomic<int> backupRequests{0};
+
+	auto primaryHandler = [&](int clientFd, const std::string& cmd, int reqNum) {
+		if (cmd.find("<art1-msg@test>") != std::string::npos)
+		{
+			// First invalid line delivered separately
+			std::string initial = "222 1 <art1-msg@test>\r\n"
+				"4b376d5839704c32715238764e34775a99999999CORRUPT_LINE_ONE_DATA\r\n";
+			send(clientFd, initial.data(), initial.size(), MSG_NOSIGNAL);
+
+			// Delayed remainder and transport terminator
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			std::string remainder = "=ypart line=1 size=100\r\ndata\r\n=yend size=100\r\n.\r\n";
+			send(clientFd, remainder.data(), remainder.size(), MSG_NOSIGNAL);
+		}
+		else
+		{
+			// Second queued valid article
+			std::string resp = "222 1 <art2-msg@test>\r\n" + validWire2;
+			send(clientFd, resp.data(), resp.size(), MSG_NOSIGNAL);
+		}
+	};
+
+	LocalNntpServer primary(primaryHandler, &primaryRequests);
+	LocalNntpServer backup(validWire1, &backupRequests);
+
+	ServerPool pool;
+	auto server1 = std::make_unique<NewsServer>(1, true, "primary", "127.0.0.1", primary.GetPort(), 0,
+		"", "", false, false, nullptr, 1, 0, 0, 0, false, Options::cvStrict);
+	auto server2 = std::make_unique<NewsServer>(2, true, "backup", "127.0.0.1", backup.GetPort(), 0,
+		"", "", false, false, nullptr, 1, 0, 1, 0, false, Options::cvStrict);
+	pool.AddServer(std::move(server1));
+	pool.AddServer(std::move(server2));
+	pool.InitConnections();
+	pool.SetRetryInterval(60);
+
+	DownloaderEnv env(tempDirOpt.string(), false, 0);
+	g_ServerPool = &pool;
+	env.statMeter->Init();
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+	nzbInfo.GetParameters()->SetParameter("*Unpack:Password", password.c_str());
+
+	// --- Article 1 ---
+	FileInfo fileInfo1;
+	fileInfo1.SetNzbInfo(&nzbInfo);
+	fileInfo1.SetFilename(filename1.c_str());
+	fileInfo1.SetTime(Util::CurrentTime());
+	fileInfo1.GetArticles()->resize(1);
+	(*fileInfo1.GetArticles())[0] = std::make_unique<ArticleInfo>();
+	(*fileInfo1.GetArticles())[0]->SetMessageId("<art1-msg@test>");
+	(*fileInfo1.GetArticles())[0]->SetSize(static_cast<int>(plaintext1.size()));
+	(*fileInfo1.GetArticles())[0]->SetPartNumber(1);
+
+	ArticleDownloader downloader1;
+	downloader1.SetFileInfo(&fileInfo1);
+	downloader1.SetArticleInfo((*fileInfo1.GetArticles())[0].get());
+	downloader1.SetInfoName("reuse_article1");
+
+	auto recordingAnalyzer1 = std::make_unique<RecordingContentAnalyzer>();
+	RecordingContentAnalyzer* analyzerPtr1 = recordingAnalyzer1.get();
+	downloader1.SetContentAnalyzer(std::move(recordingAnalyzer1));
+
+	downloader1.Run();
+
+	// Article 1 must succeed via backup provider failover
+	BOOST_CHECK_EQUAL(static_cast<int>(downloader1.GetStatus()), static_cast<int>(ArticleDownloader::adFinished));
+	BOOST_CHECK_GE(primaryRequests.load(), 1);
+	BOOST_CHECK_GE(backupRequests.load(), 1);
+
+	// Plaintext 1 committed from backup
+	Crc32 plaintextCrc1;
+	plaintextCrc1.Append(const_cast<uint8_t*>(plaintext1.data()), static_cast<uint32>(plaintext1.size()));
+	BOOST_CHECK_EQUAL((*fileInfo1.GetArticles())[0]->GetCrc(), plaintextCrc1.Finish());
+
+	const char* resultFilename1 = (*fileInfo1.GetArticles())[0]->GetResultFilename();
+	BOOST_REQUIRE(resultFilename1 != nullptr);
+	std::ifstream resultFile1(resultFilename1, std::ios::binary);
+	BOOST_REQUIRE(resultFile1);
+	std::vector<char> fileBytes1((std::istreambuf_iterator<char>(resultFile1)),
+		std::istreambuf_iterator<char>());
+	BOOST_REQUIRE_EQUAL(fileBytes1.size(), plaintext1.size());
+	BOOST_CHECK_EQUAL(memcmp(fileBytes1.data(), plaintext1.data(), plaintext1.size()), 0);
+
+	// Corrupted attempt from primary committed zero bytes to analyzer
+	BOOST_REQUIRE_EQUAL(analyzerPtr1->GetRecorded().size(), plaintext1.size());
+	BOOST_CHECK_EQUAL(memcmp(analyzerPtr1->GetRecorded().data(), plaintext1.data(), plaintext1.size()), 0);
+
+	// --- Article 2 ---
+	FileInfo fileInfo2;
+	fileInfo2.SetNzbInfo(&nzbInfo);
+	fileInfo2.SetFilename(filename2.c_str());
+	fileInfo2.SetTime(Util::CurrentTime());
+	fileInfo2.GetArticles()->resize(1);
+	(*fileInfo2.GetArticles())[0] = std::make_unique<ArticleInfo>();
+	(*fileInfo2.GetArticles())[0]->SetMessageId("<art2-msg@test>");
+	(*fileInfo2.GetArticles())[0]->SetSize(static_cast<int>(plaintext2.size()));
+	(*fileInfo2.GetArticles())[0]->SetPartNumber(1);
+
+	ArticleDownloader downloader2;
+	downloader2.SetFileInfo(&fileInfo2);
+	downloader2.SetArticleInfo((*fileInfo2.GetArticles())[0].get());
+	downloader2.SetInfoName("reuse_article2");
+
+	auto recordingAnalyzer2 = std::make_unique<RecordingContentAnalyzer>();
+	RecordingContentAnalyzer* analyzerPtr2 = recordingAnalyzer2.get();
+	downloader2.SetContentAnalyzer(std::move(recordingAnalyzer2));
+
+	downloader2.Run();
+
+	// Article 2 must succeed on primary without needing backup failover
+	BOOST_CHECK_EQUAL(static_cast<int>(downloader2.GetStatus()), static_cast<int>(ArticleDownloader::adFinished));
+	BOOST_CHECK_GE(primaryRequests.load(), 2);
+	BOOST_CHECK_EQUAL(backupRequests.load(), 1);
+
+	// Plaintext 2 committed
+	Crc32 plaintextCrc2;
+	plaintextCrc2.Append(const_cast<uint8_t*>(plaintext2.data()), static_cast<uint32>(plaintext2.size()));
+	BOOST_CHECK_EQUAL((*fileInfo2.GetArticles())[0]->GetCrc(), plaintextCrc2.Finish());
+
+	const char* resultFilename2 = (*fileInfo2.GetArticles())[0]->GetResultFilename();
+	BOOST_REQUIRE(resultFilename2 != nullptr);
+	std::ifstream resultFile2(resultFilename2, std::ios::binary);
+	BOOST_REQUIRE(resultFile2);
+	std::vector<char> fileBytes2((std::istreambuf_iterator<char>(resultFile2)),
+		std::istreambuf_iterator<char>());
+	BOOST_REQUIRE_EQUAL(fileBytes2.size(), plaintext2.size());
+	BOOST_CHECK_EQUAL(memcmp(fileBytes2.data(), plaintext2.data(), plaintext2.size()), 0);
+
+	BOOST_REQUIRE_EQUAL(analyzerPtr2->GetRecorded().size(), plaintext2.size());
+	BOOST_CHECK_EQUAL(memcmp(analyzerPtr2->GetRecorded().data(), plaintext2.data(), plaintext2.size()), 0);
+
+	BOOST_CHECK(!stdfs::exists(tempDir / filename1));
+	BOOST_CHECK(!stdfs::exists(tempDir / filename2));
 
 	g_ServerPool = env.oldServerPool;
 	stdfs::remove_all(tempDir);

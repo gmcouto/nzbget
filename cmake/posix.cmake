@@ -78,9 +78,13 @@ else()
 	set(INCLUDES ${INCLUDES} ${OPENSSL_INCLUDE_DIR})
 
 	find_package(PkgConfig REQUIRED)
-	pkg_check_modules(SODIUM REQUIRED libsodium)
-	pkg_check_modules(ARGON2 REQUIRED libargon2)
-	set(LIBS ${LIBS} ${SODIUM_LIBRARIES} ${ARGON2_LIBRARIES})
+	# IMPORTED_TARGET carries the pkg-config-resolved library paths and
+	# link flags (NZ-NEXT-3): bare ${SODIUM_LIBRARIES}/${ARGON2_LIBRARIES}
+	# are plain library names ("sodium"/"argon2") and lose the -L search
+	# path, breaking non-default prefixes discovered via PKG_CONFIG_PATH.
+	pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
+	pkg_check_modules(ARGON2 REQUIRED IMPORTED_TARGET libargon2)
+	set(LIBS ${LIBS} PkgConfig::SODIUM PkgConfig::ARGON2)
 	set(INCLUDES ${INCLUDES} ${SODIUM_INCLUDE_DIRS} ${ARGON2_INCLUDE_DIRS})
 
 	if(NOT DISABLE_CURSES)

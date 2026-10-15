@@ -72,6 +72,8 @@ private:
 	bool m_yencEncryptedMeta = false;
 	bool m_yencVersionPresent = false;
 	bool m_yencCipherPresent = false;
+	bool m_yencVersionInvalid = false;
+	bool m_yencCipherInvalid = false;
 	std::string m_yencVersionMeta;
 	std::string m_yencCipherMeta;
 	std::string m_currentElement;

@@ -761,4 +761,565 @@ BOOST_AUTO_TEST_CASE(EncryptedReleaseUnsupportedVersionTest)
 	}
 }
 
+BOOST_AUTO_TEST_CASE(EncryptedReleaseDuplicateOptionalMetadataTest)
+{
+	auto parseXml = [](const std::string& headMeta, const std::string& filename) ->
+		std::pair<bool, std::unique_ptr<NzbInfo>>
+	{
+		const std::string xml =
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
+			"<head>" + headMeta + "</head>\n"
+			"<file poster=\"p\" date=\"100\" subject=\"test.bin\">\n"
+			"<groups><group>a.b.t</group></groups>\n"
+			"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+			"</file>\n"
+			"</nzb>\n";
+		const fs::path tempNzb = fs::temp_directory_path() / filename;
+		WriteRawNzb(tempNzb, xml);
+		NzbFile nzbFile(tempNzb.string().c_str(), "");
+		bool ok = nzbFile.Parse();
+		std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
+		fs::remove(tempNzb);
+		return { ok, std::move(nzbInfo) };
+	};
+
+	auto getValidationMessage = [](const std::unique_ptr<NzbInfo>& info) -> std::string
+	{
+		if (!info) return "";
+		for (Message& message : info->GuardCachedMessages())
+		{
+			if (message.GetKind() == Message::mkError &&
+				strstr(message.GetText(), "METADATA_VALIDATION"))
+			{
+				return message.GetText();
+			}
+		}
+		return "";
+	};
+
+	// --- yenc_version: bad-then-valid ---
+	// 1. Unsupported then valid (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.0</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>",
+			"dup_ver_unsupported_then_valid_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: 1.0") != std::string::npos);
+	}
+
+	// 2. Unsupported then valid (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.0</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ver_unsupported_then_valid_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: 1.0") != std::string::npos);
+	}
+
+	// 3. Empty element then valid (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\"></meta>"
+			"<meta type=\"yenc_version\">1.2</meta>",
+			"dup_ver_empty_then_valid_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 4. Empty element then valid (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\"></meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ver_empty_then_valid_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 5. Self-closing element then valid (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\"/>"
+			"<meta type=\"yenc_version\">1.2</meta>",
+			"dup_ver_selfclose_then_valid_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 6. Self-closing element then valid (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\"/>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ver_selfclose_then_valid_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 7. Whitespace element then valid
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">   </meta>"
+			"<meta type=\"yenc_version\">1.2</meta>",
+			"dup_ver_whitespace_then_valid.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// --- yenc_version: valid-then-bad ---
+	// 8. Valid then unsupported (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\">1.0</meta>",
+			"dup_ver_valid_then_unsupported_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: 1.0") != std::string::npos);
+	}
+
+	// 9. Valid then unsupported (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\">1.0</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ver_valid_then_unsupported_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: 1.0") != std::string::npos);
+	}
+
+	// 10. Valid then empty element
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\"></meta>",
+			"dup_ver_valid_then_empty.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 11. Valid then self-closing element
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\"/>",
+			"dup_ver_valid_then_selfclose.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 12. Valid then whitespace element
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\">   </meta>",
+			"dup_ver_valid_then_whitespace.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// --- yenc_version: invalid-only ---
+	// 13. Unsupported then unsupported (reports first offending value)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\">1.0</meta>"
+			"<meta type=\"yenc_version\">2.0</meta>",
+			"dup_ver_unsupported_then_unsupported.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: 1.0") != std::string::npos);
+	}
+
+	// 14. Empty then unsupported (reports first offending value, empty)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\"></meta>"
+			"<meta type=\"yenc_version\">2.0</meta>",
+			"dup_ver_empty_then_unsupported.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// 15. Self-closing then empty
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_version\"/>"
+			"<meta type=\"yenc_version\"></meta>",
+			"dup_ver_selfclose_then_empty.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_version: ") != std::string::npos);
+	}
+
+	// --- yenc_cipher: bad-then-valid ---
+	// 16. Unsupported then valid (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>",
+			"dup_ciph_unsupported_then_valid_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: AES-256-GCM") != std::string::npos);
+	}
+
+	// 17. Unsupported then valid (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ciph_unsupported_then_valid_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: AES-256-GCM") != std::string::npos);
+	}
+
+	// 18. Empty element then valid (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\"></meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>",
+			"dup_ciph_empty_then_valid_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 19. Empty element then valid (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\"></meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ciph_empty_then_valid_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 20. Self-closing element then valid (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\"/>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>",
+			"dup_ciph_selfclose_then_valid_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 21. Self-closing element then valid (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\"/>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ciph_selfclose_then_valid_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 22. Whitespace element then valid
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">   </meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>",
+			"dup_ciph_whitespace_then_valid.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// --- yenc_cipher: valid-then-bad ---
+	// 23. Valid then unsupported (marker before)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>",
+			"dup_ciph_valid_then_unsupported_before.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: AES-256-GCM") != std::string::npos);
+	}
+
+	// 24. Valid then unsupported (marker after)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_ciph_valid_then_unsupported_after.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: AES-256-GCM") != std::string::npos);
+	}
+
+	// 25. Valid then empty element
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\"></meta>",
+			"dup_ciph_valid_then_empty.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 26. Valid then self-closing element
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\"/>",
+			"dup_ciph_valid_then_selfclose.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 27. Valid then whitespace element
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\">   </meta>",
+			"dup_ciph_valid_then_whitespace.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// --- yenc_cipher: invalid-only ---
+	// 28. Unsupported then unsupported (reports first offending value)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"yenc_cipher\">ChaCha20</meta>",
+			"dup_ciph_unsupported_then_unsupported.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: AES-256-GCM") != std::string::npos);
+	}
+
+	// 29. Empty then unsupported (reports first offending value, empty)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\"></meta>"
+			"<meta type=\"yenc_cipher\">ChaCha20</meta>",
+			"dup_ciph_empty_then_unsupported.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// 30. Self-closing then empty
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_encrypted\">true</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_cipher\"/>"
+			"<meta type=\"yenc_cipher\"></meta>",
+			"dup_ciph_selfclose_then_empty.nzb");
+		BOOST_CHECK(!ok);
+		BOOST_REQUIRE(info);
+		std::string msg = getValidationMessage(info);
+		BOOST_CHECK(msg.find("unsupported yenc_cipher: ") != std::string::npos);
+	}
+
+	// --- Controls ---
+	// 31. Absent optional metadata: accepted
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_control_absent_optional.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// 32. Valid-only duplicate version metadata: accepted
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_control_valid_duplicate_version.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// 33. Valid-only duplicate cipher metadata: accepted
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_control_valid_duplicate_cipher.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// 34. Valid-only duplicate version AND cipher metadata: accepted
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>"
+			"<meta type=\"password\">secret</meta>"
+			"<meta type=\"yenc_encrypted\">true</meta>",
+			"dup_control_valid_duplicate_both.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(info->IsYEncEncrypted());
+	}
+
+	// 35. Unencrypted release with bad-then-valid version: unchanged (accepted)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">9.9</meta>"
+			"<meta type=\"yenc_version\">1.2</meta>",
+			"dup_control_unencrypted_version_bad_then_valid.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+	}
+
+	// 36. Unencrypted release with invalid-only version: unchanged (accepted)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_version\">9.9</meta>"
+			"<meta type=\"yenc_version\">8.8</meta>",
+			"dup_control_unencrypted_version_invalid_only.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+	}
+
+	// 37. Unencrypted release with bad-then-valid cipher: unchanged (accepted)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"yenc_cipher\">XChaCha20-Poly1305</meta>",
+			"dup_control_unencrypted_cipher_bad_then_valid.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+	}
+
+	// 38. Unencrypted release with invalid-only cipher: unchanged (accepted)
+	{
+		auto [ok, info] = parseXml(
+			"<meta type=\"yenc_cipher\">AES-256-GCM</meta>"
+			"<meta type=\"yenc_cipher\">Blowfish</meta>",
+			"dup_control_unencrypted_cipher_invalid_only.nzb");
+		BOOST_CHECK(ok);
+		BOOST_REQUIRE(info);
+		BOOST_CHECK(!info->IsYEncEncrypted());
+	}
+}
+
 BOOST_AUTO_TEST_SUITE_END()

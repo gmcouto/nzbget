@@ -260,7 +260,7 @@ bool NzbFile::ValidateEncryptedReleaseMetadata()
 		// non-matching value, not as an absent entry; ordering-independent —
 		// both metas are captured during SAX parsing and validated here, after
 		// the whole head was consumed).
-		if (m_yencVersionPresent && m_yencVersionMeta != "1.2")
+		if (m_yencVersionInvalid || (m_yencVersionPresent && m_yencVersionMeta != "1.2"))
 		{
 			m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
 				"Error parsing nzb-file %s: METADATA_VALIDATION: unsupported yenc_version: %s",
@@ -268,7 +268,7 @@ bool NzbFile::ValidateEncryptedReleaseMetadata()
 			return false;
 		}
 
-		if (m_yencCipherPresent && strcasecmp(m_yencCipherMeta.c_str(), "XChaCha20-Poly1305") != 0)
+		if (m_yencCipherInvalid || (m_yencCipherPresent && strcasecmp(m_yencCipherMeta.c_str(), "XChaCha20-Poly1305") != 0))
 		{
 			m_nzbInfo->AddMessage(Message::mkError, BString<1024>(
 				"Error parsing nzb-file %s: METADATA_VALIDATION: unsupported yenc_cipher: %s",
@@ -573,15 +573,39 @@ void NzbFile::Parse_EndElement(const char *name)
 	}
 	else if (!strcmp("meta", name) && m_hasYEncVersion)
 	{
-		m_yencVersionMeta = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
-		Util::Trim(m_yencVersionMeta);
+		std::string val = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
+		Util::Trim(val);
 		m_yencVersionPresent = true;
+		if (val != "1.2")
+		{
+			if (!m_yencVersionInvalid)
+			{
+				m_yencVersionInvalid = true;
+				m_yencVersionMeta = std::move(val);
+			}
+		}
+		else if (!m_yencVersionInvalid)
+		{
+			m_yencVersionMeta = std::move(val);
+		}
 	}
 	else if (!strcmp("meta", name) && m_hasYEncCipher)
 	{
-		m_yencCipherMeta = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
-		Util::Trim(m_yencCipherMeta);
+		std::string val = m_tagContent.Empty() ? "" : (const char*)m_tagContent;
+		Util::Trim(val);
 		m_yencCipherPresent = true;
+		if (strcasecmp(val.c_str(), "XChaCha20-Poly1305") != 0)
+		{
+			if (!m_yencCipherInvalid)
+			{
+				m_yencCipherInvalid = true;
+				m_yencCipherMeta = std::move(val);
+			}
+		}
+		else if (!m_yencCipherInvalid)
+		{
+			m_yencCipherMeta = std::move(val);
+		}
 	}
 
 	m_currentElement.clear();

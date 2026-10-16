@@ -70,7 +70,17 @@ public:
 #ifdef NZBGET_TESTING_HOOKS
 	// Test-only surface: drops staged cache or temp files on auth failure
 	// testing. Never called in production (ArticleDownloader uses Finish(false)).
-	void DiscardStagedData();
+	void DiscardStagedData()
+	{
+		m_outFile.Close();
+		if (!GetSkipDiskWrite())
+		{
+			FileSystem::DeleteFile(m_tempFilename.c_str());
+			FileSystem::DeleteFile(m_resultFilename.c_str());
+		}
+		m_articlePtr = 0;
+		m_articleData = CachedSegmentData();
+	}
 	char* GetCachedData() { return m_articleData.GetData(); }
 #endif
 	void LogStartMessage(std::string_view infoFilename, bool directWrite, bool cached);

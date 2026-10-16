@@ -237,20 +237,6 @@ bool ArticleWriter::CommitAuthenticatedData(const uint8_t* data, size_t length)
 	return false;
 }
 
-#ifdef NZBGET_TESTING_HOOKS
-void ArticleWriter::DiscardStagedData()
-{
-	m_outFile.Close();
-	if (!GetSkipDiskWrite())
-	{
-		FileSystem::DeleteFile(m_tempFilename.c_str());
-		FileSystem::DeleteFile(m_resultFilename.c_str());
-	}
-	m_articlePtr = 0;
-	m_articleData = CachedSegmentData();
-}
-#endif
-
 void ArticleWriter::Finish(bool success)
 {
 	m_outFile.Close();

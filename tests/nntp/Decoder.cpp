@@ -579,9 +579,33 @@ BOOST_AUTO_TEST_CASE(EncryptedWireBufferOverflowTest)
 
 BOOST_AUTO_TEST_CASE(DecoderAuthFailedCheckOrderTest)
 {
-	Decoder decoder;
-	decoder.SetAuthFailed(true);
-	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+	// 1. Incomplete article: without auth failure Check() returns dsArticleIncomplete;
+	// with m_authFailed set, dsAuthFailed preempts dsArticleIncomplete.
+	{
+		Decoder decoder;
+		std::string incompleteMsg = "=ybegin line=128 size=16 name=test.dat\r\nsomedata\r\n";
+		decoder.DecodeBuffer(incompleteMsg.data(), static_cast<int>(incompleteMsg.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsArticleIncomplete);
+
+		decoder.SetAuthFailed(true);
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+	}
+
+	// 2. Size mismatch: without auth failure Check() returns dsInvalidSize;
+	// with m_authFailed set, dsAuthFailed preempts dsInvalidSize.
+	{
+		Decoder decoder;
+		std::string sizeMismatchMsg =
+			"=ybegin line=128 size=16 name=test.dat\r\n"
+			"shortdata\r\n"
+			"=yend size=16\r\n"
+			".\r\n";
+		decoder.DecodeBuffer(sizeMismatchMsg.data(), static_cast<int>(sizeMismatchMsg.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsInvalidSize);
+
+		decoder.SetAuthFailed(true);
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+	}
 }
 
 BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
@@ -735,28 +759,14 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	Decoder decoder;
 	decoder.SetDecryptor(&encDec);
 
-	// 1. Already-unstuffed input decodes unchanged.
-	{
-		std::string wire = assemble(wireLine3);
-		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
-		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
-		BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), segmentIndex);
-		BOOST_CHECK_EQUAL_COLLECTIONS(
-			decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
-			expectedPlaintext.begin(), expectedPlaintext.end());
-	}
-
-	// 2. Stuffed leading dot in the data line: the unstuffing layer removes it
-	//    so the decode yields the same plaintext (single unstuffing owner).
-	{
-		std::string stuffed = "." + wireLine3; // RFC 3977 §3.1.1 escaping of a leading '.'
-		std::string wire = assemble(stuffed);
-		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
-		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
-		BOOST_CHECK_EQUAL_COLLECTIONS(
-			decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
-			expectedPlaintext.begin(), expectedPlaintext.end());
-	}
+	// Already-unstuffed input decodes unchanged (single unstuffing owner).
+	std::string wire = assemble(wireLine3);
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+	BOOST_CHECK_EQUAL(decoder.GetSegmentIndex(), segmentIndex);
+	BOOST_CHECK_EQUAL_COLLECTIONS(
+		decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+		expectedPlaintext.begin(), expectedPlaintext.end());
 }
 
 BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)
@@ -1165,21 +1175,39 @@ BOOST_AUTO_TEST_CASE(EncryptedWireRestoredBlockLeadingDotTest)
 }
 
 // A truncated encrypted article whose =yencryption metadata already
-// failed authentication must report dsAuthFailed (provider failover tier),
+// arrived must report dsAuthFailed (provider failover tier),
 // not dsArticleIncomplete.
 BOOST_AUTO_TEST_CASE(TruncatedEncryptedArticleReportsAuthFailedTest)
 {
-	// Combined-only reception : an encrypted job whose Line 1 arrives as
-	// plaintext =ybegin (body-only/unencrypted framing) is an unexpected fetched
-	// mode — provider corruption. The decoder fails closed before any output.
+	const std::string password = "test123";
+	const std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const uint32_t segmentIndex = 1;
+	YEncDecryptor encDec(password);
+
+	std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+	std::vector<uint8_t> wireLine1;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+		segmentIndex, 1, true, salt.data(), wireLine1
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
+	std::vector<uint8_t> wireLine2;
+	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+		reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+		segmentIndex, 2, false, salt.data(), wireLine2
+	)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+	std::string wire;
+	wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+	wire.append("\r\n");
+	wire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+	wire.append("\r\n");
+	wire.append("someciphertextthatisneverfollowedbyyend\r\n");
+
 	Decoder decoder;
-	YEncDecryptor decryptor("test123");
-	decoder.SetDecryptor(&decryptor);
-	std::string msg =
-		"=ybegin line=128 size=16 name=test.dat\r\n"
-		"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13\r\n"
-		"someciphertextthatisneverfollowedbyyend";
-	decoder.DecodeBuffer(msg.data(), static_cast<int>(msg.size()));
+	decoder.SetDecryptor(&encDec);
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
 	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }

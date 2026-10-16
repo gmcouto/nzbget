@@ -563,7 +563,88 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectorsTest)
 			{
 				if (vector.contains("has_part_on_ybegin"))
 				{
-					// Contradictory framing vectors: verified by standards suite
+					// Contradictory framing vectors (placement-03/04):
+					// Restored =ybegin must carry part= iff physical line 2 is =ypart.
+					const bool hasPart = vector.at("has_part_on_ybegin").as_bool();
+					const bool isYpart = vector.at("is_ypart_on_line2").as_bool();
+					YEncDecryptor decryptor("test123");
+					const auto salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+
+					std::string line1Plain = hasPart
+						? "=ybegin part=1 total=2 line=128 size=16 name=test.dat"
+						: "=ybegin line=128 size=16 name=test.dat";
+					std::vector<uint8_t> wire1;
+					BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+						reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+						1, 1, true, salt.data(), wire1
+					)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+					std::string headerPlain = "=yencryption cipher=XChaCha20-Poly1305 "
+						"salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 "
+						"tag=0cd77ce245a654463f90b945b1d22d5b";
+
+					std::string block;
+					block.append(reinterpret_cast<const char*>(wire1.data()), wire1.size());
+					block.append("\r\n");
+
+					if (isYpart)
+					{
+						// placement-03: Line 2 is =ypart, Line 3 is =yencryption, Line 4 is data, Line 5 is =yend
+						std::string partPlain = "=ypart begin=1 end=16";
+						std::vector<uint8_t> wirePart;
+						BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+							reinterpret_cast<const uint8_t*>(partPlain.data()), partPlain.size(),
+							1, 2, false, salt.data(), wirePart
+						)), static_cast<int>(YEncDecryptor::Status::Ok));
+						block.append(reinterpret_cast<const char*>(wirePart.data()), wirePart.size());
+						block.append("\r\n");
+
+						std::vector<uint8_t> wireHeader;
+						BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+							reinterpret_cast<const uint8_t*>(headerPlain.data()), headerPlain.size(),
+							1, 3, false, salt.data(), wireHeader
+						)), static_cast<int>(YEncDecryptor::Status::Ok));
+						block.append(reinterpret_cast<const char*>(wireHeader.data()), wireHeader.size());
+						block.append("\r\n");
+
+						std::string endPlain = "=yend size=16";
+						std::vector<uint8_t> wireEnd;
+						BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+							reinterpret_cast<const uint8_t*>(endPlain.data()), endPlain.size(),
+							1, 5, false, salt.data(), wireEnd
+						)), static_cast<int>(YEncDecryptor::Status::Ok));
+						block.append("data\r\n");
+						block.append(reinterpret_cast<const char*>(wireEnd.data()), wireEnd.size());
+						block.append("\r\n");
+					}
+					else
+					{
+						// placement-04: Line 2 is =yencryption, Line 3 is data, Line 4 is =yend
+						std::vector<uint8_t> wireHeader;
+						BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+							reinterpret_cast<const uint8_t*>(headerPlain.data()), headerPlain.size(),
+							1, 2, false, salt.data(), wireHeader
+						)), static_cast<int>(YEncDecryptor::Status::Ok));
+						block.append(reinterpret_cast<const char*>(wireHeader.data()), wireHeader.size());
+						block.append("\r\n");
+
+						std::string endPlain = "=yend size=16";
+						std::vector<uint8_t> wireEnd;
+						BOOST_REQUIRE_EQUAL(static_cast<int>(decryptor.EncryptControlLine(
+							reinterpret_cast<const uint8_t*>(endPlain.data()), endPlain.size(),
+							1, 4, false, salt.data(), wireEnd
+						)), static_cast<int>(YEncDecryptor::Status::Ok));
+						block.append("data\r\n");
+						block.append(reinterpret_cast<const char*>(wireEnd.data()), wireEnd.size());
+						block.append("\r\n");
+					}
+
+					std::string clean;
+					std::vector<uint8_t> outSalt;
+					const bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
+					BOOST_CHECK(!ok);
+					BOOST_CHECK(clean.empty());
+					CheckZeroOutput(vector, std::vector<uint8_t>(clean.begin(), clean.end()));
 					continue;
 				}
 				// Placement: =yencryption must sit on its canonical physical

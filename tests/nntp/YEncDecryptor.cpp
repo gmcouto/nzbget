@@ -284,13 +284,10 @@ BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
 	BOOST_CHECK(outPlaintext.empty());
 }
 
-// NZBGET-TEST-05 decision (record-only): this test asserts downloader-rejection
-// semantics for forbidden segment indices. The vendored fixture
-// tests/testdata/test-vectors/index_allocation.json describes uploader
-// allocation (expected_assigned_index: candidate -> next permitted index);
-// NZBGet is downloader-only and has no allocator to assert that against, so
-// the fixture's expected_assigned_index is not wired into this test. The
-// fixture file is retained (not deleted) as the vendored allocation record.
+// NZBGET-TEST-05 decision: deleted NZBGet's fixture copy
+// tests/testdata/test-vectors/index_allocation.json (downloader-only client,
+// uploader allocation fixture not applicable). This test directly asserts
+// downloader rejection of forbidden segment indices (0x0A/0x0D bytes).
 BOOST_AUTO_TEST_CASE(ForbiddenSegmentIndexByteRejectTest)
 {
 	// Index framing rule (Body Std v1.2 §8): any uint32_be(segmentIndex) byte

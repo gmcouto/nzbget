@@ -65,13 +65,14 @@ public:
 	bool Start(Decoder::EFormat format, const char* filename, int64 fileSize, int64 articleOffset, int articleSize);
 	bool Write(char* buffer, int len);
 	bool CommitAuthenticatedData(const uint8_t* data, size_t length);
-	void DiscardStagedData();
 	void Finish(bool success);
 	bool GetDuplicate() { return m_duplicate; }
 #ifdef NZBGET_TESTING_HOOKS
+	// Test-only surface: drops staged cache or temp files on auth failure
+	// testing. Never called in production (ArticleDownloader uses Finish(false)).
+	void DiscardStagedData();
 	char* GetCachedData() { return m_articleData.GetData(); }
 #endif
-	bool IsEncryptedRelease() const;
 	void LogStartMessage(std::string_view infoFilename, bool directWrite, bool cached);
 	std::optional<OutputPaths> SetupOutputFile(DiskFile &outfile,
 											std::string_view destDir,

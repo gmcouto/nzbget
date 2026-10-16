@@ -169,7 +169,6 @@ private:
 	void ProcessRestoredBlock(const std::string& wireBlock);
 	EFormat DetectFormat(const char* buffer, int len);
 	void ProcessYenc(char* buffer, int len);
-	void ParseEncryption(const char* buffer, int len);
 	int DecodeYenc(char* buffer, char* outbuf, int len);
 	EStatus CheckYenc();
 	int DecodeUx(const char* inbuf, int len, char* outbuf);

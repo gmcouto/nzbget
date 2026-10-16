@@ -354,20 +354,58 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 
 BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
 {
-	// DiscardStagedData consults GetSkipDiskWrite(), which reads g_Options;
-	// install a minimal Options fixture like the neighboring tests do.
+	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_discard_cache_test";
+	stdfs::create_directories(tempDir);
+
+	std::string optTemp = "TempDir=" + tempDir.string();
+	std::string optDest = "DestDir=" + tempDir.string();
 	Options::CmdOptList cmdOpts;
+	cmdOpts.push_back(optTemp.c_str());
+	cmdOpts.push_back(optDest.c_str());
+	cmdOpts.push_back("ArticleCache=10");
 	Options options(&cmdOpts, nullptr);
 	Options* oldOptions = g_Options;
 	g_Options = &options;
 
+	ArticleCache articleCache;
+	ArticleCache* oldArticleCache = g_ArticleCache;
+	g_ArticleCache = &articleCache;
+
+	NzbInfo nzbInfo;
+	nzbInfo.SetDestDir(tempDir.string().c_str());
+	nzbInfo.SetYEncEncrypted(true);
+
+	FileInfo fileInfo;
+	fileInfo.SetNzbInfo(&nzbInfo);
+	fileInfo.SetFilename("discard_cache.dat");
+
+	ArticleInfo articleInfo;
+	articleInfo.SetSize(32);
+
 	ArticleWriter writer;
-	BOOST_CHECK(writer.GetCachedData() == nullptr);
+	writer.SetFileInfo(&fileInfo);
+	writer.SetArticleInfo(&articleInfo);
+	writer.SetInfoName("discard_cache_article");
+	writer.Prepare();
+
+	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "discard_cache.dat", 32, 0, 32));
+	BOOST_REQUIRE(writer.GetCachedData() != nullptr);
+
+	std::vector<uint8_t> data(32, 0x42);
+	BOOST_CHECK(writer.CommitAuthenticatedData(data.data(), data.size()));
+	BOOST_CHECK(writer.GetCachedData() != nullptr);
 
 	writer.DiscardStagedData();
 	BOOST_CHECK(writer.GetCachedData() == nullptr);
 
+	stdfs::path destFile = tempDir / "discard_cache.dat";
+	BOOST_CHECK(!stdfs::exists(destFile));
+	stdfs::path tempFile = tempDir / "discard_cache.dat.tmp";
+	BOOST_CHECK(!stdfs::exists(tempFile));
+
+	g_ArticleCache = oldArticleCache;
 	g_Options = oldOptions;
+	stdfs::remove_all(tempDir);
 }
 
 BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
@@ -460,7 +498,7 @@ BOOST_AUTO_TEST_CASE(EncryptedCommitGeometryValidationTest)
 	g_Options = oldOptions;
 }
 
-BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
+BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFilesTest)
 {
 	stdfs::path dir = stdfs::temp_directory_path() / "nzbget_encrypted_discard";
 	stdfs::create_directories(dir);
@@ -490,7 +528,7 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFiles)
 	stdfs::remove_all(dir);
 }
 
-BOOST_AUTO_TEST_CASE(DiscardTempFilesResumesCompletedOrdinaryDirectWrite)
+BOOST_AUTO_TEST_CASE(DiscardTempFilesResumesCompletedOrdinaryDirectWriteTest)
 {
 	// Regression (upstream parity): DiscardTempFiles must keep the upstream
 	// `!GetForceDirectWrite()` term on the output-delete branch. An ordinary
@@ -656,7 +694,7 @@ BOOST_AUTO_TEST_CASE(EncryptedSkipDiskAuthFailureDeletesNothingTest)
 	stdfs::remove_all(tempDir);
 }
 
-BOOST_AUTO_TEST_CASE(EncryptedDirectWriteRestoreKeepsFinishedSegments)
+BOOST_AUTO_TEST_CASE(EncryptedDirectWriteRestoreKeepsFinishedSegmentsTest)
 {
 	stdfs::path dir = stdfs::temp_directory_path() / "nzbget_encrypted_restore";
 	stdfs::create_directories(dir);

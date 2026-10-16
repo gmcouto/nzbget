@@ -69,14 +69,6 @@ void ArticleWriter::Prepare()
 		: "";
 }
 
-bool ArticleWriter::IsEncryptedRelease() const
-{
-	// Body Std v1.2 §8: gate on the yEnc-encryption metadata only —
-	// an archive password does not mean the wire is encrypted.
-	return m_fileInfo && m_fileInfo->GetNzbInfo() &&
-		m_fileInfo->GetNzbInfo()->IsYEncEncrypted();
-}
-
 bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 fileSize,
 	int64 articleOffset, int articleSize)
 {
@@ -85,8 +77,6 @@ bool ArticleWriter::Start(Decoder::EFormat format, const char* filename, int64 f
 	m_articleOffset = articleOffset;
 	m_articleSize = articleSize ? articleSize : m_articleInfo->GetSize();
 	m_articlePtr = 0;
-
-	bool isYEncEncrypted = IsEncryptedRelease();
 
 	// prepare file for writing
 	if (m_format == Decoder::efYenc)
@@ -247,6 +237,7 @@ bool ArticleWriter::CommitAuthenticatedData(const uint8_t* data, size_t length)
 	return false;
 }
 
+#ifdef NZBGET_TESTING_HOOKS
 void ArticleWriter::DiscardStagedData()
 {
 	m_outFile.Close();
@@ -258,6 +249,7 @@ void ArticleWriter::DiscardStagedData()
 	m_articlePtr = 0;
 	m_articleData = CachedSegmentData();
 }
+#endif
 
 void ArticleWriter::Finish(bool success)
 {

@@ -267,21 +267,10 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 
 	if (m_body && m_format == efYenc)
 	{
-		// The adapter strips =yencryption before ordinary parsing; only
-		// encrypted wire mode can legitimately see the header mid-body here
-		// (a stray =yencryption in an unencrypted article is ordinary data).
-		if (m_encryptedWireMode && len >= 13 && !strncmp(buffer, "=yencryption ", 13))
+		outlen = DecodeYenc(buffer, buffer, len);
+		if (m_body)
 		{
-			m_body = false;
-			m_lineBuf.Append(buffer, len);
-		}
-		else
-		{
-			outlen = DecodeYenc(buffer, buffer, len);
-			if (m_body)
-			{
-				return outlen;
-			}
+			return outlen;
 		}
 	}
 	else
@@ -313,14 +302,6 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 			{
 				const char* next = end + 1;
 				int rem = m_lineBuf.Length() - (int)(next - m_lineBuf);
-				// Only encrypted wire mode can see a mid-body =yencryption
-				// header here; ordinary yEnc never carries it as data.
-				if (m_encryptedWireMode && rem >= 13 && !strncmp(next, "=yencryption ", 13))
-				{
-					m_body = false;
-					line = end + 1;
-					continue;
-				}
 				outlen = DecodeYenc(end + 1, buffer, rem);
 				if (m_body)
 				{
@@ -609,31 +590,6 @@ void Decoder::ProcessYenc(char* buffer, int len)
 			m_endSize = atoll(pb);
 		}
 	}
-	// 4. Check =yencryption (Prefix length 13).
-	// Combined-only reception: =yencryption is only valid in restored encrypted wire blocks.
-	// In ordinary (non-wire) articles, an unknown control line starting with =y
-	// is ignored, preserving upstream behavior without provenance.
-	else if (m_encryptedWireMode && len >= 13 && !strncmp(buffer, "=yencryption ", 13))
-	{
-		ParseEncryption(buffer, len);
-	}
-}
-
-void Decoder::ParseEncryption(const char* buffer, int len)
-{
-	m_encrypted = true;
-	YEncDecryptor::YEncryptionHeader header;
-	if (!YEncDecryptor::ParseYEncryption(buffer, len, header))
-	{
-		m_authFailed = true;
-	}
-	else
-	{
-		memcpy(m_salt, header.salt.data(), 16);
-		memcpy(m_tag, header.tag.data(), 16);
-		m_segmentIndex = header.segmentIndex;
-	}
-	m_body = true;
 }
 
 int Decoder::DecodeYenc(char* buffer, char* outbuf, int len)
@@ -854,9 +810,23 @@ Decoder::EStatus Decoder::CheckYenc()
 	{
 		return dsNoBinaryData;
 	}
+	else if (m_encrypted && !m_end)
+	{
+		// Body Std v1.2 §5 PROVIDER_FAILOVER: truncated encrypted body is
+		// provider corruption, not same-server incompleteness.
+		m_authFailed = true;
+		m_decryptedPlaintext.clear();
+		return dsAuthFailed;
+	}
 	else if (!m_end)
 	{
 		return dsArticleIncomplete;
+	}
+	else if (m_encrypted && ((!m_part && m_size != m_endSize) || (m_endSize != m_outSize)))
+	{
+		m_authFailed = true;
+		m_decryptedPlaintext.clear();
+		return dsAuthFailed;
 	}
 	else if ((!m_part && m_size != m_endSize) || (m_endSize != m_outSize))
 	{

@@ -1613,7 +1613,7 @@ BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
 	}
 }
 
-BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosed)
+BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosedTest)
 {
 	const std::vector<uint8_t> payload = HexToBin("48656c6c6f20576f726c642e747874ff");
 	for (int defect = 0; defect < 3; ++defect)

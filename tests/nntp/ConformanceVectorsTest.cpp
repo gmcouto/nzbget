@@ -101,7 +101,7 @@ size_t blockerLineCount(const std::string& block)
 
 BOOST_AUTO_TEST_SUITE(NNTPTest)
 
-BOOST_AUTO_TEST_CASE(DynamicArgon2idTestVectors)
+BOOST_AUTO_TEST_CASE(DynamicArgon2idTestVectorsTest)
 {
 	const auto fixture = LoadFixture("argon2id.json");
 	const auto& vectors = fixture.at("vectors").as_array();
@@ -121,7 +121,7 @@ BOOST_AUTO_TEST_CASE(DynamicArgon2idTestVectors)
 	}
 }
 
-BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectors)
+BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectorsTest)
 {
 	const auto fixture = LoadFixture("nonce_tweak.json");
 	const auto& nonceVectors = fixture.at("body_nonce_vectors").as_array();
@@ -176,7 +176,7 @@ BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectors)
 	}
 }
 
-BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectors)
+BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectorsTest)
 {
 	const auto fixture = LoadFixture("body_encryption.json");
 	const auto& vectors = fixture.at("vectors").as_array();
@@ -223,7 +223,7 @@ BOOST_AUTO_TEST_CASE(DynamicBodyEncryptionTestVectors)
 	}
 }
 
-BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectors)
+BOOST_AUTO_TEST_CASE(DynamicControlLineEncryptionTestVectorsTest)
 {
 	const auto fixture = LoadFixture("control_line_encryption.json");
 	const auto& vectors = fixture.at("vectors").as_array();
@@ -334,7 +334,7 @@ BOOST_AUTO_TEST_CASE(ControlVec12SinglePartNameContainsPartRestoreTest)
 	BOOST_CHECK(cleanBlock.find("\r\n=ypart ") == std::string::npos && cleanBlock.find("\n=ypart ") == std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectors)
+BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectorsTest)
 {
 	const auto fixture = LoadFixture("malformed_inputs.json");
 	const auto& vectors = fixture.at("vectors").as_array();

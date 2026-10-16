@@ -1198,18 +1198,55 @@ BOOST_AUTO_TEST_CASE(TruncatedEncryptedArticleReportsAuthFailedTest)
 		segmentIndex, 2, false, salt.data(), wireLine2
 	)), static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string wire;
-	wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
-	wire.append("\r\n");
-	wire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
-	wire.append("\r\n");
-	wire.append("someciphertextthatisneverfollowedbyyend\r\n");
+	// 1. Truncated before =yend: wire stream terminates abruptly
+	{
+		std::string wire;
+		wire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+		wire.append("\r\n");
+		wire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+		wire.append("\r\n");
+		wire.append("someciphertextthatisneverfollowedbyyend\r\n");
 
-	Decoder decoder;
-	decoder.SetDecryptor(&encDec);
-	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
-	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
-	BOOST_CHECK(decoder.GetDecryptedData().empty());
+		Decoder decoder;
+		decoder.SetDecryptor(&encDec);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+
+	// 2. Truncated ciphertext with valid =yend framing: size mismatch in CheckYenc
+	// (m_endSize != m_outSize) must fail closed as dsAuthFailed, not dsInvalidSize.
+	{
+		std::vector<uint8_t> shortCt = YEncTest::HexToBin("6a0d1eb2"); // 4 bytes instead of 16
+		std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(shortCt.data()), shortCt.size()));
+
+		Crc32 wireCrc;
+		wireCrc.Append(const_cast<uint8_t*>(shortCt.data()), shortCt.size());
+		std::ostringstream crcFooter;
+		crcFooter << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << wireCrc.Finish();
+		std::string line4Plain = crcFooter.str();
+		std::vector<uint8_t> wireLine4;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+			segmentIndex, 4, false, salt.data(), wireLine4
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		std::string fullWire;
+		fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+		fullWire.append("\r\n");
+		fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+		fullWire.append("\r\n");
+		fullWire.append(wireLine3);
+		fullWire.append("\r\n");
+		fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+		fullWire.append("\r\n.\r\n");
+
+		Decoder decoder;
+		decoder.SetDecryptor(&encDec);
+		decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
 }
 
 BOOST_AUTO_TEST_CASE(OrdinaryYencLeadingDotTest)

@@ -81,7 +81,6 @@ public:
 	YEncDecryptor* GetDecryptor() const { return m_decryptor; }
 	bool IsWireTerminated() const { return m_wireTerminated; }
 	bool IsEncrypted() const { return m_encrypted; }
-	bool IsFatalError() const { return m_fatalError; }
 	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
 
 #ifdef NZBGET_TESTING_HOOKS

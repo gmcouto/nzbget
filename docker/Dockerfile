@@ -13,7 +13,7 @@ ARG CMAKE_BUILD_TYPE=Release
 #install build packages
 RUN \
   echo "**** install build packages ****" && \
-  apk add --no-cache g++ gcc git libxml2-dev libxslt-dev make ncurses-dev openssl-dev boost-dev curl cmake libsodium-dev argon2-dev
+  apk add --no-cache g++ gcc git libxml2-dev libxslt-dev make ncurses-dev openssl-dev boost-dev curl cmake libsodium-dev argon2-dev pkgconf
 
 #install archive packages
 RUN \

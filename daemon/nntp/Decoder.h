@@ -83,8 +83,6 @@ public:
 	// test target only).
 	uint32 GetSegmentIndex() const { return m_segmentIndex; }
 	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
-	const uint8_t* GetSalt() const { return m_salt; }
-	const uint8_t* GetTag() const { return m_tag; }
 #endif
 
 private:

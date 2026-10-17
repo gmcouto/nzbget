@@ -35,6 +35,23 @@
 
 namespace stdfs = std::filesystem;
 
+namespace
+{
+// RAII restore for g_Options (pattern: RestoreOptionsGlobal in
+// tests/postprocess/DirectUnpack.cpp): a failing BOOST_REQUIRE throws, so a
+// manual restore at the end of a case would be skipped and g_Options would
+// dangle at the destroyed stack Options for later cases.
+class RestoreOptionsGlobal final
+{
+public:
+	RestoreOptionsGlobal() : m_previous(g_Options) {}
+	~RestoreOptionsGlobal() { g_Options = m_previous; }
+
+private:
+	Options* m_previous;
+};
+} // namespace
+
 BOOST_AUTO_TEST_SUITE(NNTPTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedArticleWriterStagingTest)
@@ -47,8 +64,8 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterStagingTest)
 	Options::CmdOptList cmdOpts;
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back(optDest.c_str());
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	NzbInfo nzbInfo;
@@ -87,7 +104,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterStagingTest)
 	stdfs::path tempFile = tempDir / "staging_test.dat.tmp";
 	BOOST_CHECK(!stdfs::exists(tempFile));
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -101,8 +117,8 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterCommitTest)
 	Options::CmdOptList cmdOpts;
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back(optDest.c_str());
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	NzbInfo nzbInfo;
@@ -167,7 +183,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterCommitTest)
 		BOOST_CHECK_EQUAL_COLLECTIONS(readBytes.begin(), readBytes.end(), plainData.begin(), plainData.end());
 	}
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -263,8 +278,8 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back(optDest.c_str());
 	cmdOpts.push_back("DirectWrite=yes");
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	BOOST_REQUIRE(g_Options->GetDirectWrite());
@@ -304,7 +319,6 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 	// Verify Zero-Output Guarantee: destination file must never have been created
 	BOOST_CHECK(!stdfs::exists(finalDestFile));
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -318,8 +332,8 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 	Options::CmdOptList cmdOpts;
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back(optDest.c_str());
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	NzbInfo nzbInfo;
@@ -348,7 +362,6 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 	writer.Finish(true);
 	BOOST_CHECK_EQUAL(articleInfo.GetSegmentSize(), 0);
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -363,8 +376,8 @@ BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back(optDest.c_str());
 	cmdOpts.push_back("ArticleCache=10");
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	ArticleCache articleCache;
@@ -404,17 +417,16 @@ BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
 	BOOST_CHECK(!stdfs::exists(tempFile));
 
 	g_ArticleCache = oldArticleCache;
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
-BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
+BOOST_AUTO_TEST_CASE(EncryptedWriterDiscardLeavesNoDestinationTest)
 {
-	// Body Std v1.2 §8: an encrypted release whose article arrives without
-	// the =yencryption bootstrap is provider corruption. DecodeCheck returns
-	// adFailed BEFORE any writer Start/Write/Finish — this test proves the
-	// writer machinery commits nothing when that path fires: no destination
-	// file, no cached ciphertext, no CRC/diskstate metadata.
+	// Writer-discard coverage: staged (unauthenticated) bytes passed to
+	// Write() followed by DiscardStagedData() on the auth-failure path must
+	// leave no destination file. (The silent-ciphertext DecodeCheck path
+	// itself — bootstrap-less encrypted article rejected before any writer
+	// call — is exercised at the ArticleDownloader/decoder level.)
 	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_silent_ciphertext_test";
 	stdfs::create_directories(tempDir);
 
@@ -424,8 +436,8 @@ BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back(optDest.c_str());
 	cmdOpts.push_back("DirectWrite=yes");
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	NzbInfo nzbInfo;
@@ -444,20 +456,15 @@ BOOST_AUTO_TEST_CASE(SilentCiphertextNeverCommittedTest)
 	writer.SetArticleInfo(&articleInfo);
 	writer.SetInfoName("silent_ct_article");
 	writer.Prepare();
-	// No Start(), no Write(), no Finish() — matching the DecodeCheck path that
-	// returns adNotFound before any writer call.
 
-	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
-
-	// Even if ciphertext were staged (worst case), DiscardStagedData on the
-	// failure path must leave no destination file.
+	// Staged ciphertext followed by DiscardStagedData on the failure path
+	// must leave no destination file.
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "silent_ct.dat", 32, 0, 32));
 	std::vector<char> ciphertext(32, 'Q');
 	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
 	writer.DiscardStagedData();
 	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -472,8 +479,8 @@ BOOST_AUTO_TEST_CASE(EncryptedCommitGeometryValidationTest)
 	// cannot silently diverge from the tested behavior. (DecodeCheck applies
 	// this predicate verbatim before Start()/CommitAuthenticatedData.)
 	Options::CmdOptList cmdOpts;
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	// 1. Zero offset (beginPos == 0 → articleOffset = -1 after -1 subtraction).
@@ -495,7 +502,6 @@ BOOST_AUTO_TEST_CASE(EncryptedCommitGeometryValidationTest)
 	// 8. Valid multipart geometry: begin=17, end=32 in a 32-byte file.
 	BOOST_CHECK(ArticleDownloader::ValidCommitGeometry(32, 17, 32, 16));
 
-	g_Options = oldOptions;
 }
 
 BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFilesTest)
@@ -504,8 +510,8 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFilesTest)
 	stdfs::create_directories(dir);
 	Options::CmdOptList opts;
 	opts.push_back("DirectWrite=yes");
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&opts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 	// DiscardTempFiles is a member function. As in the Scanner tests, keep one
 	// never-destroyed coordinator instead of re-pointing the globals per test.
@@ -524,7 +530,6 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteDiscardRemovesTempFilesTest)
 		coordinator->DiscardTempFiles(&file);
 		BOOST_CHECK_EQUAL(stdfs::exists(segment), !encrypted);
 	}
-	g_Options = oldOptions;
 	stdfs::remove_all(dir);
 }
 
@@ -579,8 +584,8 @@ BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
 	// Force disk staging (no article cache) so the encrypted path uses the
 	// per-article temp file rather than CachedSegmentData.
 	cmdOpts.push_back("ArticleCache=0");
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	NzbInfo nzbInfo;
@@ -640,7 +645,6 @@ BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
 		BOOST_CHECK_EQUAL(content, "authenticated sibling plaintext");
 	}
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -657,8 +661,8 @@ BOOST_AUTO_TEST_CASE(EncryptedSkipDiskAuthFailureDeletesNothingTest)
 	cmdOpts.push_back(optTemp.c_str());
 	cmdOpts.push_back("ArticleCache=0");
 	cmdOpts.push_back("SkipWrite=yes");
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&cmdOpts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 
 	NzbInfo nzbInfo;
@@ -690,7 +694,6 @@ BOOST_AUTO_TEST_CASE(EncryptedSkipDiskAuthFailureDeletesNothingTest)
 	BOOST_CHECK(!stdfs::exists(tempDir / "7.001"));
 	BOOST_CHECK(!stdfs::exists(tempDir / "7.001.tmp"));
 
-	g_Options = oldOptions;
 	stdfs::remove_all(tempDir);
 }
 
@@ -704,8 +707,8 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteRestoreKeepsFinishedSegmentsTest)
 	opts.push_back("DirectWrite=yes");
 	opts.push_back(queueOpt.c_str());
 	opts.push_back(tempOpt.c_str());
+	RestoreOptionsGlobal restoreOptions;
 	Options options(&opts, nullptr);
-	Options* oldOptions = g_Options;
 	g_Options = &options;
 	for (bool encrypted : {false, true})
 	{
@@ -730,7 +733,6 @@ BOOST_AUTO_TEST_CASE(EncryptedDirectWriteRestoreKeepsFinishedSegmentsTest)
 		BOOST_CHECK_EQUAL(restored->GetStatus(), ArticleInfo::aiFinished);
 		BOOST_CHECK_EQUAL(restored->GetResultFilename() != nullptr, encrypted);
 	}
-	g_Options = oldOptions;
 	stdfs::remove_all(dir);
 }
 

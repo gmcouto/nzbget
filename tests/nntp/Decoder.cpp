@@ -278,10 +278,11 @@ BOOST_AUTO_TEST_CASE(BufferOverflowTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedWireSinglePartTest)
 {
-	// Vector from body_encryption.json: body-vec-01-spec-example (AAD-bound tag)
-	// password: "test123", salt: "1a2b3c4d5e6f7890abcdef1234567890", segmentIndex: 1
-	// AAD subject: name=test.dat, partNumber=1, partBegin=1, segmentBytes=16
-	// plaintext: "Hello World.txt\xff" (16 bytes)
+	// Built with body-vec-01 parameters (password "test123", salt
+	// "1a2b3c4d5e6f7890abcdef1234567890", segmentIndex 1, AAD name=test.dat,
+	// partNumber=1, partBegin=1, segmentBytes=16, 16-byte plaintext
+	// "Hello World.txt\xff") and encrypted in-test; the vector's
+	// ciphertext/tag bytes are not used.
 	std::string password = "test123";
 	std::vector<uint8_t> expectedPlaintext = YEncTest::HexToBin("48656c6c6f20576f726c642e747874ff");
 	uint32_t segmentIndex = 1;
@@ -606,6 +607,61 @@ BOOST_AUTO_TEST_CASE(DecoderAuthFailedCheckOrderTest)
 		decoder.SetAuthFailed(true);
 		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
 	}
+
+	// 3. Real wire path: an auth-failing encrypted article (valid tag and
+	// ciphertext, corrupted wire CRC in =yend, as in
+	// EncryptedWireBadCrcFailClosedTest) must surface dsAuthFailed through
+	// the genuine decrypt path, preempting the CRC/size status the
+	// competing branches would otherwise report.
+	{
+		std::string password = "test123";
+		std::vector<uint8_t> salt = YEncTest::HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+		std::vector<uint8_t> ct = YEncTest::HexToBin("6a0d1eb225f844920540fa382ff68874");
+		uint32_t segmentIndex = 1;
+
+		YEncDecryptor encDec(password);
+		std::string line1Plain = "=ybegin line=128 size=16 name=test.dat";
+		std::vector<uint8_t> wireLine1;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
+			segmentIndex, 1, true, salt.data(), wireLine1
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		std::string line2Plain = "=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=a85856949ac1c3f44794f8d008fcdb13";
+		std::vector<uint8_t> wireLine2;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line2Plain.data()), line2Plain.size(),
+			segmentIndex, 2, false, salt.data(), wireLine2
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		std::string wireLine3 = yEncEncode(std::string(reinterpret_cast<const char*>(ct.data()), ct.size()));
+
+		// Corrupted wire CRC: without the auth-failure precedence this
+		// article would report a CRC/size-class status instead.
+		std::string line4Plain = "=yend size=16 crc32=deadbeef";
+		std::vector<uint8_t> wireLine4;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(line4Plain.data()), line4Plain.size(),
+			segmentIndex, 4, false, salt.data(), wireLine4
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		std::string fullWire;
+		fullWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+		fullWire.append("\r\n");
+		fullWire.append(reinterpret_cast<const char*>(wireLine2.data()), wireLine2.size());
+		fullWire.append("\r\n");
+		fullWire.append(wireLine3);
+		fullWire.append("\r\n");
+		fullWire.append(reinterpret_cast<const char*>(wireLine4.data()), wireLine4.size());
+		fullWire.append("\r\n.\r\n");
+
+		Decoder decoder;
+		decoder.SetDecryptor(&encDec);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(fullWire.data(), static_cast<int>(fullWire.size()));
+		BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
 }
 
 BOOST_AUTO_TEST_CASE(DecoderSegmentIndexResetsBetweenArticlesTest)
@@ -767,6 +823,99 @@ BOOST_AUTO_TEST_CASE(DotUnstuffingBeforeBootstrapExtractionTest)
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
 		expectedPlaintext.begin(), expectedPlaintext.end());
+
+	// Genuine stuffed sub-case: a data line whose yEnc wire form begins
+	// with '.' is sent as '..' (RFC 3977 §3.1.1); the single unstuffing
+	// pass must strip the escape dot so the identical plaintext is
+	// recovered (same expectation as the unstuffed decode above, via a
+	// ciphertext whose first byte yEnc-encodes to '.').
+	{
+		BOOST_REQUIRE(encDec.EnsureMasterKey(salt.data()));
+		uint8_t nonce[24];
+		BOOST_REQUIRE(encDec.DeriveBodyNonce(segmentIndex, nonce));
+		const std::vector<uint8_t> aad = YEncDecryptor::BuildAad("test.dat", 1, 1, 16);
+
+		// Brute-force a 16-byte plaintext whose ciphertext starts with
+		// byte 0x04 (yEnc wire '.') and whose second byte does not need
+		// '=' escaping, mirroring EncryptedWireRestoredBlockLeadingDotTest.
+		std::vector<uint8_t> dotPt(16, 0), dotCt, dotTag;
+		bool found = false;
+		for (unsigned a = 0; a < 256 && !found; ++a)
+		{
+			dotPt[0] = static_cast<uint8_t>(a);
+			for (unsigned b = 0; b < 256; ++b)
+			{
+				dotPt[1] = static_cast<uint8_t>(b);
+				std::vector<uint8_t> ctTry(dotPt.size());
+				std::vector<uint8_t> tagTry(crypto_aead_xchacha20poly1305_ietf_ABYTES);
+				crypto_aead_xchacha20poly1305_ietf_encrypt_detached(ctTry.data(), tagTry.data(), nullptr,
+					dotPt.data(), dotPt.size(), aad.data(), aad.size(),
+					nullptr, nonce, encDec.GetCachedMasterKey().data());
+				if (ctTry[0] == 0x04 && ctTry[1] != 0x13)
+				{
+					dotCt = ctTry;
+					dotTag = tagTry;
+					found = true;
+					break;
+				}
+			}
+		}
+		BOOST_REQUIRE(found);
+
+		// Full yEnc escaping for the data line (the simple helper does not
+		// escape '='); the resulting line must begin with '.'.
+		std::string dotLine;
+		for (uint8_t c : dotCt)
+		{
+			uint8_t e = static_cast<uint8_t>((c + 42) % 256);
+			if (e == 0x00 || e == 0x0A || e == 0x0D || e == 0x3D)
+			{
+				dotLine += '=';
+				e = static_cast<uint8_t>((e + 64) % 256);
+			}
+			dotLine += static_cast<char>(e);
+		}
+		BOOST_REQUIRE_EQUAL(static_cast<int>(static_cast<uint8_t>(dotLine[0])), 0x2E); // '.'
+		const std::string stuffedLine = "." + dotLine;
+
+		std::string dotLine2Plain = std::string(
+			"=yencryption cipher=XChaCha20-Poly1305 salt=1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=") +
+			YEncTest::BinToHex(dotTag);
+		std::vector<uint8_t> dotWireLine2;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(dotLine2Plain.data()), dotLine2Plain.size(),
+			segmentIndex, 2, false, salt.data(), dotWireLine2
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		Crc32 dotCrc; dotCrc.Append(const_cast<uint8_t*>(dotCt.data()), dotCt.size());
+		std::ostringstream dotFooter;
+		dotFooter << "=yend size=16 crc32=" << std::hex << std::setw(8) << std::setfill('0') << dotCrc.Finish();
+		std::string dotLine4Plain = dotFooter.str();
+		std::vector<uint8_t> dotWireLine4;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(dotLine4Plain.data()), dotLine4Plain.size(),
+			segmentIndex, 4, false, salt.data(), dotWireLine4
+		)), static_cast<int>(YEncDecryptor::Status::Ok));
+
+		std::string stuffedWire;
+		stuffedWire.append(reinterpret_cast<const char*>(wireLine1.data()), wireLine1.size());
+		stuffedWire.append("\r\n");
+		stuffedWire.append(reinterpret_cast<const char*>(dotWireLine2.data()), dotWireLine2.size());
+		stuffedWire.append("\r\n");
+		stuffedWire.append(stuffedLine);
+		stuffedWire.append("\r\n");
+		stuffedWire.append(reinterpret_cast<const char*>(dotWireLine4.data()), dotWireLine4.size());
+		stuffedWire.append("\r\n.\r\n");
+
+		Decoder stuffedDecoder;
+		stuffedDecoder.SetDecryptor(&encDec);
+		stuffedDecoder.DecodeBuffer(stuffedWire.data(), static_cast<int>(stuffedWire.size()));
+		BOOST_CHECK_EQUAL(stuffedDecoder.Check(), Decoder::dsFinished);
+		BOOST_CHECK_EQUAL(stuffedDecoder.GetSegmentIndex(), segmentIndex);
+		BOOST_CHECK_EQUAL_COLLECTIONS(
+			stuffedDecoder.GetDecryptedData().begin(), stuffedDecoder.GetDecryptedData().end(),
+			dotPt.begin(), dotPt.end());
+	}
 }
 
 BOOST_AUTO_TEST_CASE(DotUnstuffingChunkBoundaryTerminatorTest)

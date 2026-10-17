@@ -40,7 +40,7 @@ download the libraries at the given URLs and compile them (see hints below).
 
 ### Debian:  
 ```bash
-apt install cmake build-essential libncurses-dev libssl-dev libxml2-dev zlib1g-dev libsodium-dev libargon2-dev
+apt install cmake build-essential libncurses-dev libssl-dev libxml2-dev zlib1g-dev libsodium-dev libargon2-dev pkg-config
 ```
   - Debian 12 (bookworm)
 ```bash

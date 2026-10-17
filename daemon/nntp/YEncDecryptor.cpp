@@ -295,22 +295,26 @@ YEncDecryptor::Status YEncDecryptor::AuthenticateAndDecrypt(
 	std::vector<uint8_t>& outPlaintext)
 {
 	outPlaintext.clear();
+	m_lastErrorFatal = false;
 
 	// A sodium_init() failure recorded at construction surfaces as a
 	// typed Error on the first crypto call instead of undefined behavior.
 	if (m_sodiumInitFailed)
 	{
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 
 	if (!EnsureMasterKey(salt))
 	{
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 
 	uint8_t nonce[24];
 	if (!DeriveBodyNonce(segmentIndex, nonce))
 	{
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 
@@ -391,9 +395,11 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	uint32_t* outSegmentIndex)
 {
 	outPlaintext.clear();
+	m_lastErrorFatal = false;
 
 	if (m_sodiumInitFailed)
 	{
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 
@@ -408,12 +414,14 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	// decryption, not just Line 1.
 	if (wireLen > MAX_LINE1_PLAINTEXT_SIZE)
 	{
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 
 	const uint8_t* ctBytes = wireData;
 	size_t ctLen = wireLen;
 	uint32_t effectiveSegmentIndex = segmentIndex;
+	std::vector<uint8_t> extractedSalt;
 
 	if (isLine1)
 	{
@@ -453,18 +461,15 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 			return Status::Error;
 		}
 
-		if (outSalt)
-		{
-			outSalt->assign(salt, salt + 16);
-		}
-		if (outSegmentIndex)
-		{
-			*outSegmentIndex = extractedIndex;
-		}
 		if (!EnsureMasterKey(salt))
 		{
+			m_lastErrorFatal = true;
 			return Status::Error;
 		}
+		// NG12-4: publish bootstrap outputs only on Status::Ok (below).
+		// Keep them in locals so a later Derive/FF1/numeral failure cannot
+		// leak a salt/index the caller would treat as authenticated.
+		extractedSalt.assign(salt, salt + 16);
 
 		effectiveSegmentIndex = extractedIndex;
 		ctBytes = wireData + 20;
@@ -491,6 +496,9 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	uint8_t tweak[8];
 	if (!DeriveControlKeyAndTweak(effectiveSegmentIndex, lineIndex, encKey, tweak))
 	{
+		// HMAC failure is a local crypto failure (or, for a non-Line-1 line,
+		// a missing master key that an earlier local failure prevented).
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 
@@ -516,7 +524,11 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 	}
 	catch (...)
 	{
+		// FF1 failures here are local (bad_alloc from EVP/BIGNUM/vector
+		// allocation), not wire corruption: the ciphertext numerals were
+		// already validated by ByteToNumeral above.
 		sodium_memzero(encKey, sizeof(encKey));
+		m_lastErrorFatal = true;
 		return Status::Error;
 	}
 	sodium_memzero(encKey, sizeof(encKey));
@@ -533,10 +545,28 @@ YEncDecryptor::Status YEncDecryptor::DecryptControlLine(
 		{
 			outPlaintext.push_back(NumeralToByte(n));
 		}
+		catch (const std::bad_alloc&)
+		{
+			outPlaintext.clear();
+			m_lastErrorFatal = true;
+			return Status::Error;
+		}
 		catch (...)
 		{
 			outPlaintext.clear();
 			return Status::Error;
+		}
+	}
+
+	if (isLine1)
+	{
+		if (outSalt)
+		{
+			outSalt->assign(extractedSalt.begin(), extractedSalt.end());
+		}
+		if (outSegmentIndex)
+		{
+			*outSegmentIndex = effectiveSegmentIndex;
 		}
 	}
 
@@ -617,7 +647,7 @@ bool YEncDecryptor::ParseYEncryption(
 		HexToBytesStrict(tagHex.data(), tagHex.size(), outHeader.tag.data(), outHeader.tag.size());
 }
 
-bool YEncDecryptor::RestoreControlLines(
+YEncDecryptor::Status YEncDecryptor::RestoreControlLines(
 	const char* wireBlock,
 	size_t wireLen,
 	std::string& outCleanBlock,
@@ -634,86 +664,171 @@ bool YEncDecryptor::RestoreControlLines(
 	// PROVIDER_FAILOVER — no FF1 error is ever passed through as a data line.
 	outCleanBlock.clear();
 	outLine1Salt.clear();
-	auto fail = [&]()
-	{
-		outCleanBlock.clear();
-		outLine1Salt.clear();
-		return false;
-	};
+	m_lastErrorFatal = false;
 	if (!wireBlock || wireLen == 0)
 	{
-		return fail();
+		return Status::Error;
 	}
 
+	// Only lines 1-3 and the footer need random access; the body between
+	// them streams through verbatim, so no per-line index is materialised
+	// (Body Std v1.2 §9 / NG12-1: a 16 MiB block of separators must not
+	// allocate ~16M line descriptors). First/second/third are found by a
+	// forward scan; the footer is the last non-empty physical line (Control
+	// Std v1.2 §5 as amended by STD12-2: trailing empty lines are ignored
+	// before footer counting), found by a backward scan. Logical line
+	// counting still counts every physical line, so the footer's lineIndex
+	// is exact and every body line is checked for a smuggled =yencryption.
 	struct WireLine
 	{
-		const char* data;
-		size_t len;
+		const char* data = nullptr;
+		size_t len = 0;
 		std::string_view ending;
 	};
-	std::vector<WireLine> lines;
-	const char* cursor = wireBlock;
-	const char* end = wireBlock + wireLen;
-	while (cursor < end)
+	auto scanLine = [](const char* cursor, const char* endPos, WireLine& out)
 	{
-		const char* newline = static_cast<const char*>(memchr(cursor, '\n', end - cursor));
-		const char* lineEnd = newline ? newline : end;
+		const char* newline = static_cast<const char*>(memchr(cursor, '\n', endPos - cursor));
+		const char* lineEnd = newline ? newline : endPos;
 		const bool crlf = lineEnd > cursor && lineEnd[-1] == '\r';
-		lines.push_back({cursor, static_cast<size_t>((crlf ? lineEnd - 1 : lineEnd) - cursor),
-			newline ? (crlf ? std::string_view("\r\n", 2) : std::string_view("\n", 1)) : std::string_view()});
-		cursor = newline ? newline + 1 : end;
-	}
-	while (!lines.empty() && lines.back().len == 0)
+		out.data = cursor;
+		out.len = static_cast<size_t>((crlf ? lineEnd - 1 : lineEnd) - cursor);
+		out.ending = newline ? (crlf ? std::string_view("\r\n", 2) : std::string_view("\n", 1)) : std::string_view();
+		return newline ? newline + 1 : endPos;
+	};
+	auto previousLine = [](const char* cursor, const char* beginPos, WireLine& out)
 	{
-		lines.pop_back();
-	}
-	if (!lines.empty() && lines.back().len == 1 && lines.back().data[0] == '.')
+		// cursor is one past the candidate line's ending (end of block on
+		// the first call, then the start of the line just examined).
+		const char* contentEnd = cursor;
+		std::string_view ending;
+		if (contentEnd > beginPos && contentEnd[-1] == '\n')
+		{
+			--contentEnd;
+			if (contentEnd > beginPos && contentEnd[-1] == '\r')
+			{
+				--contentEnd;
+				ending = std::string_view("\r\n", 2);
+			}
+			else
+			{
+				ending = std::string_view("\n", 1);
+			}
+		}
+		const char* lineStart = contentEnd;
+		while (lineStart > beginPos && lineStart[-1] != '\n')
+		{
+			--lineStart;
+		}
+		out.data = lineStart;
+		out.len = static_cast<size_t>(contentEnd - lineStart);
+		out.ending = ending;
+		return lineStart;
+	};
+
+	WireLine firstLine;
+	const char* afterFirst = scanLine(wireBlock, wireBlock + wireLen, firstLine);
+	WireLine secondProbe;
+	scanLine(afterFirst, wireBlock + wireLen, secondProbe);
+	const bool secondOversized = secondProbe.len > MAX_LINE1_PLAINTEXT_SIZE;
+	// Locate the footer without materialising lines: the footer is the
+	// last non-empty line; a lone "." terminator line after it is skipped,
+	// then further trailing blanks are ignored.
+	WireLine footerLine;
+	const char* footerStart = wireBlock + wireLen;
 	{
-		lines.pop_back();
+		const char* cursor = wireBlock + wireLen;
+		bool skippedTerminator = false;
+		while (cursor > wireBlock)
+		{
+			WireLine line;
+			const char* lineStart = previousLine(cursor, wireBlock, line);
+			if (line.len == 0)
+			{
+				cursor = lineStart;
+				continue;
+			}
+			if (!skippedTerminator && line.len == 1 && line.data[0] == '.')
+			{
+				skippedTerminator = true;
+				cursor = lineStart;
+				continue;
+			}
+			footerLine = line;
+			footerStart = lineStart;
+			break;
+		}
 	}
-	while (!lines.empty() && lines.back().len == 0)
+	// footerIndex is the footer's zero-based physical index: count the
+	// lines before it (O(1) memory; the block is already bounded).
+	size_t footerIndex = 0;
+	for (const char* scan = wireBlock; scan < footerStart;)
 	{
-		lines.pop_back();
+		WireLine line;
+		scan = scanLine(scan, footerStart, line);
+		++footerIndex;
 	}
-	if (lines.size() < 3)
+	if (footerIndex < 2)
 	{
-		return fail();
+		outCleanBlock.clear();
+		// A degenerate block whose only candidate footer is an oversized
+		// Line 2: the line-count check fires first, but the oversized
+		// line is a local failure, so keep its classification.
+		m_lastErrorFatal = secondOversized;
+		return Status::Error;
 	}
 
 	std::vector<uint8_t> restored;
 	uint32_t line1SegmentIndex = 0;
-	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[0].data), lines[0].len,
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(firstLine.data), firstLine.len,
 		0, 1, true, restored, &outLine1Salt, &line1SegmentIndex) != Status::Ok ||
 		restored.size() < 8 || memcmp(restored.data(), "=ybegin ", 8) != 0 ||
 		line1SegmentIndex == 0)
 	{
-		return fail();
+		outCleanBlock.clear();
+		outLine1Salt.clear();
+		return Status::Error;
 	}
 
 	const std::string begin(restored.begin(), restored.end());
-	outCleanBlock.append(begin).append(lines[0].ending);
+	outCleanBlock.append(begin).append(firstLine.ending);
+	WireLine secondLine;
+	const char* afterSecond = scanLine(afterFirst, wireBlock + wireLen, secondLine);
 	// Control Encryption Standard v1.2 §5: restore physical line 2 first.
-	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[1].data), lines[1].len,
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(secondLine.data), secondLine.len,
 		line1SegmentIndex, 2, false, restored) != Status::Ok)
 	{
-		return fail();
+		outCleanBlock.clear();
+		outLine1Salt.clear();
+		return Status::Error;
 	}
 	const bool multipart = restored.size() >= 7 && memcmp(restored.data(), "=ypart ", 7) == 0;
-	const size_t headerIndex = multipart ? 2 : 1;
 	const size_t nameIndex = begin.find(" name=");
 	const size_t partIndex = begin.find(" part=");
 	const bool hasPart = partIndex != std::string::npos && (nameIndex == std::string::npos || partIndex < nameIndex);
 	if (multipart != hasPart)
 	{
-		return fail();
+		outCleanBlock.clear();
+		outLine1Salt.clear();
+		return Status::Error;
 	}
+	const char* bodyCursor = afterSecond;
 	if (multipart)
 	{
-		outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(lines[1].ending);
-		if (lines.size() < 4 || DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[2].data), lines[2].len,
+		outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(secondLine.ending);
+		if (footerIndex < 3)
+		{
+			outCleanBlock.clear();
+			outLine1Salt.clear();
+			return Status::Error;
+		}
+		WireLine thirdLine;
+		bodyCursor = scanLine(afterSecond, wireBlock + wireLen, thirdLine);
+		if (DecryptControlLine(reinterpret_cast<const uint8_t*>(thirdLine.data), thirdLine.len,
 			line1SegmentIndex, 3, false, restored) != Status::Ok)
 		{
-			return fail();
+			outCleanBlock.clear();
+			outLine1Salt.clear();
+			return Status::Error;
 		}
 	}
 
@@ -722,7 +837,7 @@ bool YEncDecryptor::RestoreControlLines(
 	{
 		outCleanBlock.clear();
 		outLine1Salt.clear();
-		return fail();
+		return Status::Error;
 	}
 
 	// Enforce Dual-Bootstrap Agreement
@@ -730,29 +845,37 @@ bool YEncDecryptor::RestoreControlLines(
 	{
 		outCleanBlock.clear();
 		outLine1Salt.clear();
-		return fail();
+		return Status::Error;
 	}
 
-	for (size_t i = headerIndex + 1; i + 1 < lines.size(); ++i)
+	// Stream the body verbatim: every middle line is still checked for a
+	// smuggled =yencryption line, but no per-line storage is kept.
+	for (const char* scan = bodyCursor; scan < footerStart;)
 	{
-		if (lines[i].len >= 13 && memcmp(lines[i].data, "=yencryption ", 13) == 0)
+		WireLine line;
+		const char* next = scanLine(scan, footerStart, line);
+		if (line.len >= 13 && memcmp(line.data, "=yencryption ", 13) == 0)
 		{
-			return fail();
+			outCleanBlock.clear();
+			outLine1Salt.clear();
+			return Status::Error;
 		}
-		outCleanBlock.append(lines[i].data, lines[i].len).append(lines[i].ending);
+		outCleanBlock.append(line.data, line.len).append(line.ending);
+		scan = next;
 	}
 
-	const size_t footerIndex = lines.size() - 1;
-	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(lines[footerIndex].data), lines[footerIndex].len,
-		line1SegmentIndex, static_cast<uint32_t>(lines.size()), false, restored) != Status::Ok ||
+	if (DecryptControlLine(reinterpret_cast<const uint8_t*>(footerLine.data), footerLine.len,
+		line1SegmentIndex, static_cast<uint32_t>(footerIndex + 1), false, restored) != Status::Ok ||
 		restored.size() < 5 || memcmp(restored.data(), "=yend", 5) != 0)
 	{
-		return fail();
+		outCleanBlock.clear();
+		outLine1Salt.clear();
+		return Status::Error;
 	}
-	outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(lines[footerIndex].ending);
+	outCleanBlock.append(reinterpret_cast<const char*>(restored.data()), restored.size()).append(footerLine.ending);
 	if (outHeader)
 	{
 		*outHeader = std::move(header);
 	}
-	return true;
+	return Status::Ok;
 }

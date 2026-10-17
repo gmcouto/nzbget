@@ -572,9 +572,11 @@ BOOST_AUTO_TEST_CASE(EncryptedWireBufferOverflowTest)
 		decoder.DecodeBuffer(largeChunk.data(), static_cast<int>(largeChunk.size()));
 	}
 
-	// Must fail closed with dsAuthFailed on buffer ceiling overflow
+	// Must fail closed on buffer ceiling overflow. Exceeding the local
+	// 16 MiB article bound is a local failure (NG12-2), so the status is
+	// dsFatalError rather than provider-corruption dsAuthFailed.
 	auto status = decoder.Check();
-	BOOST_CHECK_EQUAL(status, Decoder::dsAuthFailed);
+	BOOST_CHECK_EQUAL(status, Decoder::dsFatalError);
 	BOOST_CHECK(decoder.GetDecryptedData().empty());
 }
 
@@ -1088,6 +1090,21 @@ BOOST_AUTO_TEST_CASE(PlaintextLine1RejectedBeforeKeyDerivationTest)
 	}
 }
 
+BOOST_AUTO_TEST_CASE(OversizedLine1RejectedBeforeFf1IsFatalTest)
+{
+	// NG12-2: the oversized-Line-1 local limit is fatal (dsFatalError),
+	// not provider corruption (dsAuthFailed).
+	YEncDecryptor encDec("test123");
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+	std::string wire = "1a2b3c4d5e6f7890abcdef123456789000000001";
+	wire += std::string(YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE + 1 - 20, 'a');
+	wire += "\r\n.\r\n";
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFatalError));
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
 BOOST_AUTO_TEST_CASE(OversizedLine1RejectedBeforeFf1Test)
 {
 	// Control Std v1.2 §9 (Article-Bounded Memory): a receiver MAY reject an
@@ -1106,7 +1123,8 @@ BOOST_AUTO_TEST_CASE(OversizedLine1RejectedBeforeFf1Test)
 	wire += std::string(YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE + 1 - 20, 'a');
 	wire += "\r\n.\r\n";
 	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
-	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	// NG12-2: the oversized-line local limit is fatal, not failover.
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFatalError));
 	// Rejection must happen before any key derivation: no salt was cached.
 	BOOST_CHECK_EQUAL(keyCache.Size(), 0u);
 
@@ -1124,6 +1142,23 @@ BOOST_AUTO_TEST_CASE(OversizedLine1RejectedBeforeFf1Test)
 	BOOST_CHECK_EQUAL(keyCache.Size(), 1u);
 }
 
+// NG12-1: a hostile block of nothing but separators (100k empty lines,
+// ~100 KB, far under the 16 MiB cap) must fail closed quickly without
+// materialising a line descriptor per physical line. Structurally the
+// bound is enforced in RestoreControlLines (only lines 1-3 + footer are
+// ever held); this case pins the fail-closed behaviour at that scale.
+BOOST_AUTO_TEST_CASE(EncryptedSeparatorFloodFailsClosedTest)
+{
+	YEncDecryptor decryptor("test123");
+	Decoder decoder;
+	decoder.SetDecryptor(&decryptor);
+	std::string wire(100000, '\n');
+	wire += ".\r\n";
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
 // Control Std v1.2 §9 (Article-Bounded Memory): the cap bounds EVERY
 // control-line decryption, not just Line 1 — RestoreControlLines also
 // FF1-decrypts =ypart, =yencryption and the footer, and a hostile oversized
@@ -1134,9 +1169,10 @@ BOOST_AUTO_TEST_CASE(OversizedNonLine1ControlLineRejectedBeforeFf1Test)
 	// line position) is oversized beyond the cap.
 	const std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
 	YEncDecryptor encDec("test123");
+	const std::string line1Plain = "=ybegin line=128 size=16 name=file.bin";
 	std::vector<uint8_t> wireLine1;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
-		reinterpret_cast<const uint8_t*>("=ybegin line=128 size=16 name=file.bin"), 34,
+		reinterpret_cast<const uint8_t*>(line1Plain.data()), line1Plain.size(),
 		1, 1, true, salt.data(), wireLine1)),
 		static_cast<int>(YEncDecryptor::Status::Ok));
 
@@ -1149,7 +1185,7 @@ BOOST_AUTO_TEST_CASE(OversizedNonLine1ControlLineRejectedBeforeFf1Test)
 	Decoder decoder;
 	decoder.SetDecryptor(&encDec2);
 	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
-	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsFatalError));
 	// Line 1 decrypted fine (its key was derived and cached); the failure is
 	// the oversized line 2, rejected by the cap before reaching FF1.
 	BOOST_CHECK_EQUAL(keyCache.Size(), 1u);
@@ -1809,7 +1845,7 @@ BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
 		YEncDecryptor::YEncryptionHeader parsed;
 		std::string clean;
 		std::vector<uint8_t> outSalt;
-		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt, &parsed));
+		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt, &parsed) == YEncDecryptor::Status::Ok);
 		BOOST_CHECK_EQUAL(clean, "=ybegin line=128 size=16\r\nF\r\n=yend size=16 crc32=00000000\r\n");
 		BOOST_CHECK_EQUAL(parsed.segmentIndex, 1u);
 	}
@@ -1821,10 +1857,83 @@ BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
 			encrypt("=yend size=16 crc32=00000000", 5, false) + "\r\n";
 		std::string clean;
 		std::vector<uint8_t> outSalt;
-		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt));
+		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt) == YEncDecryptor::Status::Ok);
 		BOOST_CHECK(clean.find("=ypart begin=1 end=16\r\n") != std::string::npos);
 		BOOST_CHECK(clean.find("=yencryption") == std::string::npos);
 	}
+}
+
+// NG12-1/NG12-2: trailing separators after the footer are outside the
+// block (STD12-2) and must not shift the footer's lineIndex; an oversized
+// non-Line-1 control line is a local (fatal) failure, not provider
+// corruption, so it surfaces as dsFatalError instead of dsAuthFailed.
+BOOST_AUTO_TEST_CASE(EncryptedTrailingBlankLinesAfterFooterTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	std::string wire = BuildEncryptedSinglePartWire("file.bin", expectedPlaintext);
+	BOOST_REQUIRE(wire.ends_with("\r\n.\r\n"));
+	wire.insert(wire.size() - 3, "\r\n\r\n");
+	YEncDecryptor decryptor("test123");
+	Decoder decoder;
+	decoder.SetDecryptor(&decryptor);
+	decoder.SetCrcCheck(true);
+	decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsFinished);
+	BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+		expectedPlaintext.begin(), expectedPlaintext.end());
+}
+
+// NG12-2: AuthenticateAndDecrypt's local failures (here: empty password
+// makes EnsureMasterKey fail) are fatal, while a bad tag stays AuthFailed.
+BOOST_AUTO_TEST_CASE(EncryptedLocalCryptoFailureIsFatalTest)
+{
+	YEncDecryptor decryptor("");
+	const std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	const std::vector<uint8_t> tag = HexToBin("0cd77ce245a654463f90b945b1d22d5b");
+	const std::vector<uint8_t> aad = YEncDecryptor::BuildAad("file.bin", 1, 1, 1);
+	const uint8_t ct[1] = {0};
+	std::vector<uint8_t> out;
+	BOOST_CHECK(decryptor.AuthenticateAndDecrypt(ct, sizeof(ct), salt.data(), tag.data(), 1,
+		aad.data(), aad.size(), out) == YEncDecryptor::Status::Error);
+	BOOST_CHECK(decryptor.WasLastErrorFatal());
+	BOOST_CHECK(out.empty());
+}
+
+// NG12-3: an encrypted multipart part= at or above 2^32 fails closed as
+// provider corruption; the parsed value never wraps into the AAD. The
+// ordinary path keeps its upstream atoi behaviour.
+BOOST_AUTO_TEST_CASE(EncryptedPartOverflowFailsClosedTest)
+{
+	// Build a full encrypted multipart article whose restored =ybegin
+	// carries part=4294967296 (>= 2^32).
+	const std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	YEncDecryptor encDec("test123");
+	auto encrypt = [&](const std::string& text, uint32_t lineIndex, bool line1)
+	{
+		std::vector<uint8_t> out;
+		BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
+			reinterpret_cast<const uint8_t*>(text.data()), text.size(), 1, lineIndex, line1, salt.data(), out)),
+			static_cast<int>(YEncDecryptor::Status::Ok));
+		return std::string(out.begin(), out.end());
+	};
+	const std::string header = std::string("=yencryption cipher=XChaCha20-Poly1305 salt=") +
+		"1a2b3c4d5e6f7890abcdef1234567890 index=00000001 tag=00000000000000000000000000000000";
+	const std::string wire =
+		encrypt("=ybegin part=4294967296 total=2 line=128 size=32 name=multi.dat", 1, true) + "\r\n" +
+		encrypt("=ypart begin=1 end=16", 2, false) + "\r\n" +
+		encrypt(header, 3, false) + "\r\n" + "F\r\n" +
+		encrypt("=yend size=16 part=4294967296 pcrc32=00000000", 5, false) + "\r\n.\r\n";
+	Decoder decoder;
+	decoder.SetDecryptor(&encDec);
+	decoder.DecodeBuffer(const_cast<char*>(wire.data()), static_cast<int>(wire.size()));
+	BOOST_CHECK_EQUAL(decoder.Check(), Decoder::dsAuthFailed);
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+
+	// Ordinary path is untouched: it still uses atoi() exactly as upstream.
+	Decoder plain;
+	const std::string plainLine = "=ybegin part=4294967296 total=2 line=128 size=32 name=multi.dat\r\n";
+	plain.DecodeBuffer(const_cast<char*>(plainLine.data()), static_cast<int>(plainLine.size()));
+	BOOST_CHECK_EQUAL(plain.GetPartNumber(), atoi("4294967296"));
 }
 
 BOOST_AUTO_TEST_CASE(EncryptedMissingNameAndCrcFailClosedTest)

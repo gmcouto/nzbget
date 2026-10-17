@@ -674,6 +674,11 @@ ArticleDownloader::EStatus ArticleDownloader::DecodeCheck()
 
 			return adFinished;
 		}
+		else if (status == Decoder::dsFatalError)
+		{
+			error("Article %s: local decryption failure, aborting", *m_infoName);
+			return adFatalError;
+		}
 		else if (status == Decoder::dsAuthFailed)
 		{
 			warn("Article %s failed authentication, retrying...", *m_infoName);

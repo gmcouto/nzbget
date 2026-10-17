@@ -230,6 +230,105 @@ BOOST_AUTO_TEST_CASE(YEncDecryptorAuthFailureZeroizationTest)
 	BOOST_CHECK(outPlaintext.empty());
 }
 
+BOOST_AUTO_TEST_CASE(DecryptControlLineOutputsOnlyOnOkTest)
+{
+	// NG12-4: *outSalt/*outSegmentIndex are published only on Status::Ok.
+	// A Line 1 that passes the bootstrap framing checks but fails key
+	// derivation (empty password) must leave caller-sentinel outputs
+	// untouched. This shape previously assigned the outputs before the
+	// EnsureMasterKey failure return.
+	YEncDecryptor emptyDecryptor("");
+	const std::vector<uint8_t> salt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
+	std::string wireHex = BinToHex(salt);
+	wireHex += "00000001";
+	wireHex += "3d3d";
+	const std::vector<uint8_t> wire = HexToBin(wireHex);
+	BOOST_REQUIRE_EQUAL(wire.size(), 22U);
+
+	std::vector<uint8_t> plaintext;
+	std::vector<uint8_t> outSalt = {0xAA, 0xBB};
+	uint32_t outSegmentIndex = 0xDEADBEEF;
+	auto st = emptyDecryptor.DecryptControlLine(
+		wire.data(), wire.size(), 0, 1, true, plaintext, &outSalt, &outSegmentIndex);
+	BOOST_CHECK(st == YEncDecryptor::Status::Error);
+	BOOST_CHECK(plaintext.empty());
+	BOOST_REQUIRE_EQUAL(outSalt.size(), 2U);
+	BOOST_CHECK_EQUAL(static_cast<int>(outSalt[0]), 0xAA);
+	BOOST_CHECK_EQUAL(static_cast<int>(outSalt[1]), 0xBB);
+	BOOST_CHECK_EQUAL(outSegmentIndex, 0xDEADBEEFU);
+
+	// The oversized-line local failure is fatal-classified (NG12-2).
+	YEncDecryptor decryptor("test123");
+	std::vector<uint8_t> oversized(YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE + 1, 'a');
+	st = decryptor.DecryptControlLine(
+		oversized.data(), oversized.size(), 1, 2, false, plaintext);
+	BOOST_CHECK(st == YEncDecryptor::Status::Error);
+	BOOST_CHECK(decryptor.WasLastErrorFatal());
+
+	// Post-EnsureMasterKey failure: a valid password derives the master
+	// key, but a forbidden numeral byte (0x00) in the FF1 ciphertext makes
+	// ByteToNumeral throw. The bootstrap salt/index must still not be
+	// published (NG12-4), and the stale fatal flag from the oversized
+	// call above must be reset by this non-fatal wire failure (NG12-2).
+	{
+		YEncDecryptor wireDecryptor("test123");
+		// Prime m_lastErrorFatal with a fatal (oversized) failure.
+		std::vector<uint8_t> primePt;
+		BOOST_CHECK(wireDecryptor.DecryptControlLine(
+			oversized.data(), oversized.size(), 1, 2, false, primePt) == YEncDecryptor::Status::Error);
+		BOOST_REQUIRE(wireDecryptor.WasLastErrorFatal());
+
+		std::vector<uint8_t> wire2 = salt;
+		wire2.push_back(0x00);
+		wire2.push_back(0x00);
+		wire2.push_back(0x00);
+		wire2.push_back(0x01); // segmentIndex = 1
+		wire2.push_back(0x00); // forbidden FF1 ciphertext byte
+		wire2.push_back(0x01);
+		BOOST_REQUIRE_EQUAL(wire2.size(), 22U);
+
+		std::vector<uint8_t> outSalt2 = {0xAA, 0xBB};
+		uint32_t outSegmentIndex2 = 0xDEADBEEF;
+		std::vector<uint8_t> plaintext2;
+		auto st2 = wireDecryptor.DecryptControlLine(
+			wire2.data(), wire2.size(), 0, 1, true, plaintext2, &outSalt2, &outSegmentIndex2);
+		BOOST_CHECK(st2 == YEncDecryptor::Status::Error);
+		BOOST_CHECK(plaintext2.empty());
+		BOOST_REQUIRE_EQUAL(outSalt2.size(), 2U);
+		BOOST_CHECK_EQUAL(static_cast<int>(outSalt2[0]), 0xAA);
+		BOOST_CHECK_EQUAL(static_cast<int>(outSalt2[1]), 0xBB);
+		BOOST_CHECK_EQUAL(outSegmentIndex2, 0xDEADBEEFU);
+		BOOST_CHECK(!wireDecryptor.WasLastErrorFatal());
+	}
+
+	// Same stale-flag reset for AuthenticateAndDecrypt: a fatal error
+	// followed by a non-fatal AuthFailed must clear the flag.
+	{
+		YEncDecryptor authDecryptor("");
+		const std::vector<uint8_t> tag = HexToBin("0cd77ce245a654463f90b945b1d22d5b");
+		const std::vector<uint8_t> aad = YEncDecryptor::BuildAad("file.bin", 1, 1, 1);
+		const uint8_t ct[1] = {0};
+		std::vector<uint8_t> out;
+		BOOST_CHECK(authDecryptor.AuthenticateAndDecrypt(ct, sizeof(ct), salt.data(), tag.data(), 1,
+			aad.data(), aad.size(), out) == YEncDecryptor::Status::Error);
+		BOOST_REQUIRE(authDecryptor.WasLastErrorFatal());
+
+		YEncDecryptor authDecryptor2("test123");
+		// Prime fatal via empty-password decryptor is a different instance;
+		// instead prime this instance with an oversized control line.
+		std::vector<uint8_t> primePt;
+		BOOST_CHECK(authDecryptor2.DecryptControlLine(
+			oversized.data(), oversized.size(), 1, 2, false, primePt) == YEncDecryptor::Status::Error);
+		BOOST_REQUIRE(authDecryptor2.WasLastErrorFatal());
+		const std::vector<uint8_t> badTag(16, 0xFF);
+		const std::vector<uint8_t> ctVec = HexToBin("6a0d1eb225f844920540fa382ff68874");
+		BOOST_CHECK(authDecryptor2.AuthenticateAndDecrypt(ctVec.data(), ctVec.size(), salt.data(), badTag.data(), 1,
+			aad.data(), aad.size(), out) == YEncDecryptor::Status::AuthFailed);
+		BOOST_CHECK(!authDecryptor2.WasLastErrorFatal());
+		BOOST_CHECK(out.empty());
+	}
+}
+
 // NZBGET-TEST-05 decision: deleted NZBGet's fixture copy
 // tests/testdata/test-vectors/index_allocation.json (downloader-only client,
 // uploader allocation fixture not applicable). This test directly asserts

@@ -79,6 +79,39 @@ static bool ParseEncryptedCrcToken(const char* token, const char* bufferEnd, uin
 	return true;
 }
 
+// Body Std v1.2 §5: on the encrypted path the =ybegin part= value enters
+// the AAD as uint32, so it must be parsed with a checked conversion: at
+// least one decimal digit, the entire token consumed, and the value must
+// not exceed UINT32_MAX (>= 2^32 is rejected). The token runs to the first
+// space, tab, CR, LF, NUL, or to the end of the bounded buffer. Ordinary
+// articles keep the upstream atoi parsing in ProcessYenc.
+static bool ParseEncryptedPartToken(const char* token, const char* bufferEnd, uint32_t& value)
+{
+	uint64_t parsed = 0;
+	bool anyDigit = false;
+	while (token < bufferEnd && *token != '\0' && *token != ' ' && *token != '\t' && *token != '\r' && *token != '\n')
+	{
+		const char c = *token++;
+		if (c < '0' || c > '9')
+		{
+			return false;
+		}
+		anyDigit = true;
+		const uint32_t digit = static_cast<uint32_t>(c - '0');
+		if (parsed > (UINT32_MAX - digit) / 10)
+		{
+			return false;
+		}
+		parsed = parsed * 10 + digit;
+	}
+	if (!anyDigit)
+	{
+		return false;
+	}
+	value = static_cast<uint32_t>(parsed);
+	return true;
+}
+
 Decoder::Decoder()
 {
 	Clear();
@@ -109,6 +142,7 @@ void Decoder::Clear()
 	m_lineBuf.SetLength(0);
 	m_encrypted = false;
 	m_authFailed = false;
+	m_fatalError = false;
 	// Reset the bootstrap-extracted segment index between articles — a stale
 	// index from a previous article would corrupt this article's key derivation
 	// and bypass dual-bootstrap agreement.
@@ -167,7 +201,9 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 		// growing the buffer without limit.
 		if (m_wireBuffer.size() + static_cast<size_t>(len) > MAX_WIRE_BUFFER_SIZE)
 		{
-			m_authFailed = true;
+			// Exceeding the local article-size bound is a local failure,
+			// not corruption another provider could fix.
+			m_fatalError = true;
 			m_wireBuffer.clear();
 			m_wireProcessed = true;
 			m_eof = true;
@@ -209,7 +245,7 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				// decryption.
 				if (candidateLine1.size() > YEncDecryptor::MAX_LINE1_PLAINTEXT_SIZE)
 				{
-					m_authFailed = true;
+					m_fatalError = true;
 					m_wireBuffer.clear();
 					m_wireProcessed = true;
 					m_eof = true;
@@ -238,7 +274,16 @@ int Decoder::DecodeBuffer(char* buffer, int len, bool alreadyUnstuffed)
 				}
 				else
 				{
-					m_authFailed = true;
+					// A local crypto failure (sodium/Argon2id/oversized
+					// line) is fatal; wire corruption stays failover.
+					if (st == YEncDecryptor::Status::Error && m_decryptor->WasLastErrorFatal())
+					{
+						m_fatalError = true;
+					}
+					else
+					{
+						m_authFailed = true;
+					}
 					m_wireBuffer.clear();
 					m_wireProcessed = true;
 					m_eof = true;
@@ -525,7 +570,25 @@ void Decoder::ProcessYenc(char* buffer, int len)
 
 		if (m_part && partPtr)
 		{
-			m_partNumber = atoi(partPtr + 6);
+			if (m_encryptedWireMode)
+			{
+				// Encrypted path (Body Std v1.2 §5): part= enters the AAD
+				// as uint32, so parse it checked; a malformed or >= 2^32
+				// value fails closed as provider corruption with no
+				// plaintext released. Ordinary yEnc keeps atoi below.
+				uint32_t encryptedPart = 0;
+				if (!ParseEncryptedPartToken(partPtr + 6, buffer + len, encryptedPart))
+				{
+					m_authFailed = true;
+					m_decryptedPlaintext.clear();
+					return;
+				}
+				m_partNumber = static_cast<int>(encryptedPart);
+			}
+			else
+			{
+				m_partNumber = atoi(partPtr + 6);
+			}
 		}
 		else
 		{
@@ -715,12 +778,19 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 	std::string cleanBlock;
 	std::vector<uint8_t> line1Salt;
 	YEncDecryptor::YEncryptionHeader header;
-	bool ok = m_decryptor->RestoreControlLines(
+	YEncDecryptor::Status restoreStatus = m_decryptor->RestoreControlLines(
 		wireBlock.data(), wireBlock.size(), cleanBlock, line1Salt, &header
 	);
-	if (!ok)
+	if (restoreStatus != YEncDecryptor::Status::Ok)
 	{
-		m_authFailed = true;
+		if (restoreStatus == YEncDecryptor::Status::Error && m_decryptor->WasLastErrorFatal())
+		{
+			m_fatalError = true;
+		}
+		else
+		{
+			m_authFailed = true;
+		}
 		m_decryptedPlaintext.clear();
 		return;
 	}
@@ -756,6 +826,11 @@ void Decoder::ProcessRestoredBlock(const std::string& wireBlock)
 
 Decoder::EStatus Decoder::Check()
 {
+	if (m_fatalError)
+	{
+		return dsFatalError;
+	}
+
 	if (m_authFailed)
 	{
 		return dsAuthFailed;
@@ -766,6 +841,11 @@ Decoder::EStatus Decoder::Check()
 		m_eof = true;
 		ProcessRestoredBlock(m_wireBuffer);
 		m_wireProcessed = true;
+	}
+
+	if (m_fatalError)
+	{
+		return dsFatalError;
 	}
 
 	if (m_authFailed)
@@ -792,6 +872,11 @@ Decoder::EStatus Decoder::CheckYenc()
 
 	debug("Expected crc32=%x", m_expectedCRC);
 	debug("Calculated crc32=%x", m_calculatedCRC);
+
+	if (m_fatalError)
+	{
+		return dsFatalError;
+	}
 
 	// Check auth failure before completeness so a truncated
 	// encrypted article is classified as dsAuthFailed (provider failover
@@ -886,6 +971,14 @@ Decoder::EStatus Decoder::CheckYenc()
 			m_cipherPayload.data(), m_cipherPayload.size(),
 			m_salt, m_tag, m_segmentIndex, aad.data(), aad.size(), m_decryptedPlaintext
 		);
+		if (st == YEncDecryptor::Status::Error)
+		{
+			// Local crypto failure (sodium/Argon2id/HMAC): fatal, no
+			// provider can fix it. AuthFailed stays provider failover.
+			m_fatalError = true;
+			m_decryptedPlaintext.clear();
+			return dsFatalError;
+		}
 		if (st != YEncDecryptor::Status::Ok)
 		{
 			m_authFailed = true;

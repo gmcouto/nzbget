@@ -165,7 +165,10 @@ BOOST_AUTO_TEST_CASE(ScannerEffectivePasswordGateTest)
 
 		// (b) no password from ANY source (no meta, no filename token, no
 		// parameters): rejected with METADATA_VALIDATION and not added to the
-		// download queue. The release lands in history (delete status dsScan),
+		// download queue. This is the real gate coverage for conformance
+		// vector metadata-03-missing-password (DynamicMalformedInputsTestVectorsTest
+		// only pins that vector's structural classification). The release
+		// lands in history (delete status dsScan),
 		// matching the production flow; nzbId is the history record's id.
 		{
 			const fs::path nzbFile = tempDir / "scan_gate_nopwd.nzb";

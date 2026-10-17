@@ -41,7 +41,10 @@ public:
 		dsCrcError,
 		dsInvalidSize,
 		dsNoBinaryData,
-		dsAuthFailed
+		dsAuthFailed,
+		// Local crypto failure (sodium/Argon2id/oversized control line):
+		// fatal, not provider corruption — no other provider can fix it.
+		dsFatalError
 	};
 
 	enum EFormat
@@ -53,7 +56,10 @@ public:
 
 	// Keep headroom for configurable article sizes and worst-case yEnc escaping
 	// (roughly twice the payload). The 16 MiB wire cap bounds staging to one
-	// article; wire/restored/ciphertext/plaintext copies can total about 64 MiB.
+	// article: wire, restored, ciphertext and plaintext copies are each at
+	// most one wire-sized buffer (<= 16 MiB), so the enforced bound is about
+	// 64 MiB total. Control-line restoration adds only O(1) line descriptors
+	// (lines 1-3 and the footer), never one per physical line.
 	static constexpr size_t MAX_WIRE_BUFFER_SIZE = 16 * 1024 * 1024;
 
 	Decoder();
@@ -75,6 +81,7 @@ public:
 	YEncDecryptor* GetDecryptor() const { return m_decryptor; }
 	bool IsWireTerminated() const { return m_wireTerminated; }
 	bool IsEncrypted() const { return m_encrypted; }
+	bool IsFatalError() const { return m_fatalError; }
 	const std::vector<uint8_t>& GetDecryptedData() const { return m_decryptedPlaintext; }
 
 #ifdef NZBGET_TESTING_HOOKS
@@ -82,6 +89,7 @@ public:
 	// Never compiled into release builds (define NZBGET_TESTING_HOOKS in the
 	// test target only).
 	uint32 GetSegmentIndex() const { return m_segmentIndex; }
+	int GetPartNumber() const { return m_partNumber; }
 	void SetAuthFailed(bool authFailed) { m_authFailed = authFailed; }
 #endif
 
@@ -140,6 +148,7 @@ private:
 	uint32 m_segmentIndex = 0;
 	bool m_encrypted = false;
 	bool m_authFailed = false;
+	bool m_fatalError = false;
 	uint8_t m_salt[16] = {0};
 	uint8_t m_tag[16] = {0};
 	std::vector<uint8_t> m_cipherPayload;

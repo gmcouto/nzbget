@@ -93,8 +93,9 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterStagingTest)
 	bool writeOk = writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size()));
 	BOOST_CHECK(writeOk);
 
-	// On authentication failure, discard staged data
-	writer.DiscardStagedData();
+	// Production auth-failure path (ArticleDownloader calls Finish(false)).
+	writer.Finish(false);
+	BOOST_CHECK(articleInfo.GetSegmentContent() == nullptr);
 
 	// Zero-Output Guarantee: Destination file and temp files must not exist
 	stdfs::path destFile = tempDir / "staging_test.dat";
@@ -313,8 +314,9 @@ BOOST_AUTO_TEST_CASE(EncryptedArticleWriterDirectWriteGatingTest)
 	std::vector<char> ciphertext(32, 'Z');
 	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
 
-	// Discard staged data (simulating auth failure)
-	writer.DiscardStagedData();
+	// Production auth-failure path (simulating authentication failure).
+	writer.Finish(false);
+	BOOST_CHECK(articleInfo.GetSegmentContent() == nullptr);
 
 	// Verify Zero-Output Guarantee: destination file must never have been created
 	BOOST_CHECK(!stdfs::exists(finalDestFile));
@@ -365,66 +367,11 @@ BOOST_AUTO_TEST_CASE(ZeroByteCommitAuthenticatedDataTest)
 	stdfs::remove_all(tempDir);
 }
 
-BOOST_AUTO_TEST_CASE(ArticleWriterDiscardStagedDataClearsCacheTest)
+BOOST_AUTO_TEST_CASE(EncryptedWriterFinishFalseLeavesNoDestinationTest)
 {
-	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_discard_cache_test";
-	stdfs::create_directories(tempDir);
-
-	std::string optTemp = "TempDir=" + tempDir.string();
-	std::string optDest = "DestDir=" + tempDir.string();
-	Options::CmdOptList cmdOpts;
-	cmdOpts.push_back(optTemp.c_str());
-	cmdOpts.push_back(optDest.c_str());
-	cmdOpts.push_back("ArticleCache=10");
-	RestoreOptionsGlobal restoreOptions;
-	Options options(&cmdOpts, nullptr);
-	g_Options = &options;
-
-	ArticleCache articleCache;
-	ArticleCache* oldArticleCache = g_ArticleCache;
-	g_ArticleCache = &articleCache;
-
-	NzbInfo nzbInfo;
-	nzbInfo.SetDestDir(tempDir.string().c_str());
-	nzbInfo.SetYEncEncrypted(true);
-
-	FileInfo fileInfo;
-	fileInfo.SetNzbInfo(&nzbInfo);
-	fileInfo.SetFilename("discard_cache.dat");
-
-	ArticleInfo articleInfo;
-	articleInfo.SetSize(32);
-
-	ArticleWriter writer;
-	writer.SetFileInfo(&fileInfo);
-	writer.SetArticleInfo(&articleInfo);
-	writer.SetInfoName("discard_cache_article");
-	writer.Prepare();
-
-	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "discard_cache.dat", 32, 0, 32));
-	BOOST_REQUIRE(writer.GetCachedData() != nullptr);
-
-	std::vector<uint8_t> data(32, 0x42);
-	BOOST_CHECK(writer.CommitAuthenticatedData(data.data(), data.size()));
-	BOOST_CHECK(writer.GetCachedData() != nullptr);
-
-	writer.DiscardStagedData();
-	BOOST_CHECK(writer.GetCachedData() == nullptr);
-
-	stdfs::path destFile = tempDir / "discard_cache.dat";
-	BOOST_CHECK(!stdfs::exists(destFile));
-	stdfs::path tempFile = tempDir / "discard_cache.dat.tmp";
-	BOOST_CHECK(!stdfs::exists(tempFile));
-
-	g_ArticleCache = oldArticleCache;
-	stdfs::remove_all(tempDir);
-}
-
-BOOST_AUTO_TEST_CASE(EncryptedWriterDiscardLeavesNoDestinationTest)
-{
-	// Writer-discard coverage: staged (unauthenticated) bytes passed to
-	// Write() followed by DiscardStagedData() on the auth-failure path must
-	// leave no destination file. (The silent-ciphertext DecodeCheck path
+	// Zero-output coverage: staged (unauthenticated) bytes passed to
+	// Write() followed by Finish(false) on the production auth-failure
+	// path must leave no destination file. (The silent-ciphertext DecodeCheck path
 	// itself — bootstrap-less encrypted article rejected before any writer
 	// call — is exercised at the ArticleDownloader/decoder level.)
 	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_silent_ciphertext_test";
@@ -457,12 +404,13 @@ BOOST_AUTO_TEST_CASE(EncryptedWriterDiscardLeavesNoDestinationTest)
 	writer.SetInfoName("silent_ct_article");
 	writer.Prepare();
 
-	// Staged ciphertext followed by DiscardStagedData on the failure path
-	// must leave no destination file.
+	// Staged ciphertext followed by Finish(false) on the production
+	// failure path must leave no destination file or attached segment.
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "silent_ct.dat", 32, 0, 32));
 	std::vector<char> ciphertext(32, 'Q');
 	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
-	writer.DiscardStagedData();
+	writer.Finish(false);
+	BOOST_CHECK(articleInfo.GetSegmentContent() == nullptr);
 	BOOST_CHECK(!stdfs::exists(tempDir / "silent_ct.dat"));
 
 	stdfs::remove_all(tempDir);
@@ -568,12 +516,11 @@ BOOST_AUTO_TEST_CASE(DiscardTempFilesResumesCompletedOrdinaryDirectWriteTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
 {
-	// On encrypted auth failure both DiscardStagedData and
-	// Finish(false) delete m_tempFilename/m_resultFilename. Ownership check:
-	// the deleted paths are this article's own per-part scratch paths
+	// On encrypted auth failure the production Finish(false) path deletes
+	// m_tempFilename/m_resultFilename. Ownership check: the deleted paths
+	// are this article's own per-part scratch paths
 	// (<TempDir>/<fileId>.<part>[.tmp]); a sibling article's committed result
-	// file (different part number) and its cached segment must survive, in
-	// disk-staging (cache-full), skip-disk, and direct-write-gated modes.
+	// file (different part number) must survive.
 	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_auth_failure_ownership_test";
 	stdfs::remove_all(tempDir);
 	stdfs::create_directories(tempDir);
@@ -623,19 +570,9 @@ BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
 	std::vector<char> ciphertext(32, 'X');
 	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
 
-	// Auth failure path 1: DiscardStagedData.
-	writer.DiscardStagedData();
-	BOOST_CHECK(!stdfs::exists(tempDir / "42.002"));
-	BOOST_CHECK(!stdfs::exists(tempDir / "42.002.tmp"));
-	BOOST_CHECK_EQUAL(stdfs::exists(siblingSegment), true);
-	{
-		std::ifstream ifs(siblingSegment, std::ios::binary);
-		std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-		BOOST_CHECK_EQUAL(content, "authenticated sibling plaintext");
-	}
-
-	// Auth failure path 2: the subsequent Finish(false) from Download().
+	// Production auth failure path: Finish(false) from Download().
 	writer.Finish(false);
+	BOOST_CHECK(articleInfo.GetSegmentContent() == nullptr);
 	BOOST_CHECK(!stdfs::exists(tempDir / "42.002"));
 	BOOST_CHECK(!stdfs::exists(tempDir / "42.002.tmp"));
 	BOOST_CHECK_EQUAL(stdfs::exists(siblingSegment), true);
@@ -650,8 +587,8 @@ BOOST_AUTO_TEST_CASE(EncryptedAuthFailureOwnershipTest)
 
 BOOST_AUTO_TEST_CASE(EncryptedSkipDiskAuthFailureDeletesNothingTest)
 {
-	// Skip-disk mode must keep the deletion guard in DiscardStagedData and
-	// Finish(false): nothing on disk exists, nothing is touched.
+	// Skip-disk mode must keep the deletion guard in Finish(false):
+	// nothing on disk exists, nothing is touched.
 	stdfs::path tempDir = stdfs::temp_directory_path() / "nzbget_skipdisk_auth_fail_test";
 	stdfs::remove_all(tempDir);
 	stdfs::create_directories(tempDir);
@@ -687,8 +624,8 @@ BOOST_AUTO_TEST_CASE(EncryptedSkipDiskAuthFailureDeletesNothingTest)
 	BOOST_REQUIRE(writer.Start(Decoder::efYenc, "skipdisk_test.dat", 32, 0, 32));
 	std::vector<char> ciphertext(32, 'X');
 	BOOST_CHECK(writer.Write(ciphertext.data(), static_cast<int>(ciphertext.size())));
-	writer.DiscardStagedData();
 	writer.Finish(false);
+	BOOST_CHECK(articleInfo.GetSegmentContent() == nullptr);
 
 	// SkipWrite guard: nothing was created and nothing was deleted.
 	BOOST_CHECK(!stdfs::exists(tempDir / "7.001"));

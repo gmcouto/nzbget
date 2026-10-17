@@ -102,6 +102,12 @@ public:
 		uint32_t* outSegmentIndex = nullptr
 	);
 
+	// Result of the most recent failed operation when it returned
+	// Status::Error: a local (fatal) crypto failure such as sodium/Argon2id
+	// failure or an oversized control line, as opposed to wire-byte
+	// corruption that another provider could fix.
+	bool WasLastErrorFatal() const { return m_lastErrorFatal; }
+
 	struct YEncryptionHeader
 	{
 		std::vector<uint8_t> salt;
@@ -118,7 +124,9 @@ public:
 	// Restores the plaintext control lines of an encrypted wire block.
 	// The authoritative segment index is extracted from the Line 1 bootstrap;
 	// dual-bootstrap agreement with the =yencryption header is enforced here.
-	bool RestoreControlLines(
+	// On Status::Error, WasLastErrorFatal() says whether the failure was a
+	// local crypto failure (true) or wire corruption (false).
+	Status RestoreControlLines(
 		const char* wireBlock,
 		size_t wireLen,
 		std::string& outCleanBlock,
@@ -166,6 +174,7 @@ private:
 	std::string m_password;
 	YEncKeyCache* m_keyCache = nullptr;
 	bool m_sodiumInitFailed = false;
+	bool m_lastErrorFatal = false;
 	std::vector<uint8_t> m_cachedSalt;
 	std::vector<uint8_t> m_cachedMasterKey; // 32 bytes, zeroized on destruction or reset
 

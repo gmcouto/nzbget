@@ -1187,21 +1187,6 @@ bool QueueCoordinator::MergeQueueEntries(DownloadQueue* downloadQueue, NzbInfo* 
 		return false;
 	}
 
-	if (destNzbInfo->IsYEncEncrypted() != srcNzbInfo->IsYEncEncrypted())
-	{
-		error("Could not merge %s and %s: Incompatible encryption mode", destNzbInfo->GetName(), srcNzbInfo->GetName());
-		return false;
-	}
-
-	if (destNzbInfo->IsYEncEncrypted())
-	{
-		if (strcmp(destNzbInfo->GetPassword(), srcNzbInfo->GetPassword()) != 0)
-		{
-			error("Could not merge %s and %s: Encryption password mismatch", destNzbInfo->GetName(), srcNzbInfo->GetName());
-			return false;
-		}
-	}
-
 	// set new dest directory, new category and move downloaded files to new dest directory
 	srcNzbInfo->SetFilename(srcNzbInfo->GetFilename());
 	SetQueueEntryCategory(downloadQueue, srcNzbInfo, destNzbInfo->GetCategory());

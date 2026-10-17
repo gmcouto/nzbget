@@ -15,11 +15,6 @@
 #include <boost/test/unit_test.hpp>
 
 #include "YEncDecryptor.h"
-#include "NzbFile.h"
-#include "DownloadInfo.h"
-#include "ArticleWriter.h"
-#include "ArticleDownloader.h"
-#include "Options.h"
 #include "Decoder.h"
 #include "Log.h"
 #include "YEncTestHelpers.h"
@@ -27,7 +22,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -135,17 +129,12 @@ BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectorsTest)
 		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
 		{
 			YEncDecryptor decryptor("test123");
-#ifdef NZBGET_TESTING_HOOKS
-			// Test-only hook: seed the fixture's master key directly, skipping
-			// the 64 MiB Argon2id derivation (the key itself is the fixture
-			// constant, so determinism is preserved).
+			// Seed the fixture's master key directly, skipping the 64 MiB
+			// Argon2id derivation (the key itself is the fixture constant,
+			// so determinism is preserved). NZBGET_TESTING_HOOKS is
+			// unconditional for this target (see tests/CMakeLists.txt).
 			decryptor.SetMasterKeyForTesting(HexToBin(JsonString(vector, "key_hex")).data());
 			BOOST_REQUIRE(decryptor.GetCachedMasterKey().size() == 32);
-#else
-			const auto bodySalt = HexToBin("1a2b3c4d5e6f7890abcdef1234567890");
-			BOOST_REQUIRE(decryptor.EnsureMasterKey(bodySalt.data()));
-			BOOST_REQUIRE_EQUAL(BinToHex(decryptor.GetCachedMasterKey()), JsonString(vector, "key_hex"));
-#endif
 			uint8_t nonce[24];
 			BOOST_REQUIRE(decryptor.DeriveBodyNonce(JsonUint32(vector, "segment_index"), nonce));
 			BOOST_CHECK_EQUAL(BinToHex(nonce, sizeof(nonce)), JsonString(vector, "expected_nonce_hex"));
@@ -158,14 +147,8 @@ BOOST_AUTO_TEST_CASE(DynamicNonceTweakTestVectorsTest)
 		BOOST_TEST_CONTEXT(JsonString(vector, "id"))
 		{
 			YEncDecryptor decryptor("test123");
-#ifdef NZBGET_TESTING_HOOKS
 			decryptor.SetMasterKeyForTesting(HexToBin(JsonString(vector, "master_key_hex")).data());
 			BOOST_REQUIRE(decryptor.GetCachedMasterKey().size() == 32);
-#else
-			const auto controlSalt = HexToBin("4b376d5839704c32715238764e34775a");
-			BOOST_REQUIRE(decryptor.EnsureMasterKey(controlSalt.data()));
-			BOOST_REQUIRE_EQUAL(BinToHex(decryptor.GetCachedMasterKey()), JsonString(vector, "master_key_hex"));
-#endif
 			uint8_t key[32];
 			uint8_t tweak[8];
 			BOOST_REQUIRE(decryptor.DeriveControlKeyAndTweak(
@@ -326,7 +309,7 @@ BOOST_AUTO_TEST_CASE(ControlVec12SinglePartNameContainsPartRestoreTest)
 	std::string cleanBlock;
 	std::vector<uint8_t> salt;
 	YEncDecryptor::YEncryptionHeader header;
-	BOOST_REQUIRE(decryptor.RestoreControlLines(wire.data(), wire.size(), cleanBlock, salt, &header));
+	BOOST_REQUIRE(decryptor.RestoreControlLines(wire.data(), wire.size(), cleanBlock, salt, &header) == YEncDecryptor::Status::Ok);
 	BOOST_CHECK_EQUAL(BinToHex(salt), JsonString(vector, "salt_hex"));
 	BOOST_CHECK_EQUAL(header.segmentIndex, JsonUint32(vector, "segment_index"));
 	BOOST_CHECK_EQUAL(cleanBlock,
@@ -449,78 +432,24 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectorsTest)
 
 				std::string clean;
 				std::vector<uint8_t> outSalt;
-				bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
+				bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt) == YEncDecryptor::Status::Ok;
 				BOOST_CHECK(!ok);
 				BOOST_CHECK(clean.empty());
 			}
 			else if (category == "metadata_validation")
 			{
-				// metadata-01/02 (provenance): the vectors carry no NZB payload
-				// fields, so this runner cannot exercise them; NZB-level
-				// provenance gating is owned by the queue tests
-				// (tests/queue/NzbFile.cpp:YEncEncryptedMetaParsingTest and
-				// Scanner.cpp:ScannerEffectivePasswordGateTest). Only
-				// metadata-03 (missing password) maps to a check here.
-				if (id != "metadata-03-missing-password")
-				{
-					continue;
-				}
-				// Structural tier: metadata-shaped failures are structural
-				// (METADATA_VALIDATION) — provider failover is NOT permitted and
-				// output must be withheld. metadata-03 (missing password) maps
-				// to the structural abort in
-				// NzbFile::ValidateEncryptedReleasePassword.
+				// metadata-01/02/03 are NZB/queue-level gates, not article-crypto
+				// checks: the real effective-password gate is driven end-to-end by
+				// tests/queue/Scanner.cpp:ScannerEffectivePasswordGateTest (and the
+				// parse-level contract by
+				// tests/queue/NzbFile.cpp:EncryptedReleaseWithoutPasswordStructuralAbortTest).
+				// This runner has no NZB payload for these vectors, so it only
+				// pins their structural classification: no provider failover and
+				// zero output.
 				const std::string expectedError = JsonString(vector, "expected_error");
 				const bool failoverPermitted = vector.at("provider_failover_permitted").as_bool();
 				BOOST_CHECK(!failoverPermitted);
-				BOOST_CHECK_EQUAL(expectedError, "MISSING_PASSWORD");
-
-				Options::CmdOptList cmdOpts;
-				std::string destOpt = "DestDir=" + std::filesystem::temp_directory_path().string();
-				std::string interOpt = "InterDir=";
-				cmdOpts.push_back(destOpt.c_str());
-				cmdOpts.push_back(interOpt.c_str());
-				Options options(&cmdOpts, nullptr);
-				Options* oldOptions = g_Options;
-				g_Options = &options;
-
-				std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-					"<nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\">\n"
-					"<head><meta type=\"yenc_encrypted\">true</meta></head>\n"
-					"<file poster=\"p\" date=\"100\" subject=\"mv.bin\">"
-					"<groups><group>a.b.t</group></groups>"
-					"<segments><segment bytes=\"16\" number=\"1\">msg1@test</segment></segments>"
-					"</file></nzb>\n";
-
-				const std::filesystem::path tempNzb =
-					std::filesystem::temp_directory_path() / (id + ".nzb");
-				{
-					std::ofstream output(tempNzb, std::ios::binary);
-					output << xml;
-				}
-				NzbFile nzbFile(tempNzb.string().c_str(), "");
-				const bool parsed = nzbFile.Parse();
-				std::unique_ptr<NzbInfo> nzbInfo = nzbFile.DetachNzbInfo();
-				std::filesystem::remove(tempNzb);
-				g_Options = oldOptions;
-
-				// Structural tier (METADATA_VALIDATION): the release parses, but the
-				// effective-password gate in Scanner::AddFileToQueue /
-				// ProcessStandalone rejects it AFTER the caller-parameter
-				// merge — an API-supplied *Unpack:Password can still satisfy
-				// the requirement, so the check must run post-merge. Here no
-				// parameter source exists: the effective password is empty,
-				// exactly the condition the Scanner gate rejects with
-				// METADATA_VALIDATION (see ScannerEffectivePasswordGateTest).
-				BOOST_CHECK(parsed);
-				BOOST_REQUIRE(nzbInfo);
-				BOOST_CHECK(nzbInfo->IsYEncEncrypted());
-				BOOST_CHECK_EQUAL(nzbInfo->GetPassword(), "");
-				const bool structurallyRejected = nzbInfo->IsYEncEncrypted() &&
-					(!nzbInfo->GetPassword() || nzbInfo->GetPassword()[0] == '\0');
-				BOOST_CHECK(structurallyRejected);
-
-				// Zero-Output Guarantee holds for the structural tier.
+				BOOST_CHECK(!expectedError.empty());
 				std::vector<uint8_t> noOutput;
 				CheckZeroOutput(vector, noOutput);
 			}
@@ -606,7 +535,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectorsTest)
 
 					std::string clean;
 					std::vector<uint8_t> outSalt;
-					const bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
+					const bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt) == YEncDecryptor::Status::Ok;
 					BOOST_CHECK(!ok);
 					BOOST_CHECK(clean.empty());
 					CheckZeroOutput(vector, std::vector<uint8_t>(clean.begin(), clean.end()));
@@ -672,7 +601,7 @@ BOOST_AUTO_TEST_CASE(DynamicMalformedInputsTestVectorsTest)
 
 				std::string clean;
 				std::vector<uint8_t> outSalt;
-				const bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt);
+				const bool ok = decryptor.RestoreControlLines(block.data(), block.size(), clean, outSalt) == YEncDecryptor::Status::Ok;
 				BOOST_CHECK(!ok);
 				BOOST_CHECK(clean.empty());
 				CheckZeroOutput(vector, std::vector<uint8_t>(clean.begin(), clean.end()));

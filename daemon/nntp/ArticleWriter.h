@@ -67,22 +67,6 @@ public:
 	bool CommitAuthenticatedData(const uint8_t* data, size_t length);
 	void Finish(bool success);
 	bool GetDuplicate() { return m_duplicate; }
-#ifdef NZBGET_TESTING_HOOKS
-	// Test-only surface: drops staged cache or temp files on auth failure
-	// testing. Never called in production (ArticleDownloader uses Finish(false)).
-	void DiscardStagedData()
-	{
-		m_outFile.Close();
-		if (!GetSkipDiskWrite())
-		{
-			FileSystem::DeleteFile(m_tempFilename.c_str());
-			FileSystem::DeleteFile(m_resultFilename.c_str());
-		}
-		m_articlePtr = 0;
-		m_articleData = CachedSegmentData();
-	}
-	char* GetCachedData() { return m_articleData.GetData(); }
-#endif
 	void LogStartMessage(std::string_view infoFilename, bool directWrite, bool cached);
 	std::optional<OutputPaths> SetupOutputFile(DiskFile &outfile,
 											std::string_view destDir,

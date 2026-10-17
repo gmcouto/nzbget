@@ -85,11 +85,11 @@ static bool ParseEncryptedCrcToken(const char* token, const char* bufferEnd, uin
 // not exceed UINT32_MAX (>= 2^32 is rejected). The token runs to the first
 // space, tab, CR, LF, NUL, or to the end of the bounded buffer. Ordinary
 // articles keep the upstream atoi parsing in ProcessYenc.
-static bool ParseEncryptedPartToken(const char* token, const char* bufferEnd, uint32_t& value)
+static bool ParseEncryptedDecimalToken(const char* token, const char* bufferEnd, uint32_t& value)
 {
 	uint64_t parsed = 0;
 	bool anyDigit = false;
-	while (token < bufferEnd && *token != '\0' && *token != ' ' && *token != '\t' && *token != '\r' && *token != '\n')
+	while (token < bufferEnd && *token != ' ' && *token != '\t' && *token != '\r' && *token != '\n')
 	{
 		const char c = *token++;
 		if (c < '0' || c > '9')
@@ -468,10 +468,24 @@ void Decoder::UnstuffInPlace(char* buffer, int& len)
 	len = write;
 }
 
-void Decoder::ParseYpart(const char* buffer)
+void Decoder::ParseYpart(const char* buffer, const char* bufferEnd)
 {
 	m_part = true;
 	m_body = true;
+	// Body Std v1.2 §2.1 (encrypted path only): conflicting or malformed
+	// duplicate begin=/end= fail closed as provider corruption. This must
+	// run before any geometry value (including a range >= 2^32) is stored,
+	// otherwise a 32-bit-truncated stored value could make the later
+	// >= 2^32 check in CheckYenc pass silently. Ordinary yEnc never takes
+	// this branch (m_encryptedWireMode false) and keeps first-match strstr.
+	if (m_encryptedWireMode)
+	{
+		CheckEncryptedDuplicateGeometry(buffer, bufferEnd ? bufferEnd : buffer + strlen(buffer));
+		if (m_authFailed)
+		{
+			return;
+		}
+	}
 	const char* pb = strstr(buffer, " begin=");
 	if (pb)
 	{
@@ -483,6 +497,73 @@ void Decoder::ParseYpart(const char* buffer)
 	{
 		pb += 5; //=strlen(" end=")
 		m_endPos = static_cast<int64>(atoll(pb));
+	}
+}
+
+void Decoder::CheckEncryptedDuplicateGeometry(const char* buffer, const char* bufferEnd)
+{
+	static const char* const geometryKeywords[] = {"part=", "size=", "begin=", "end="};
+	for (const char* keyword : geometryKeywords)
+	{
+		const size_t keywordLen = strlen(keyword);
+		uint32_t resolved = 0;
+		bool seen = false;
+		// Scan whitespace-delimited tokens (the restored control line is
+		// bounded by bufferEnd); only occurrences before any name= count,
+		// so keyword-like text inside the file name is never a field.
+		const char* cursor = buffer;
+		while (cursor < bufferEnd)
+		{
+			while (cursor < bufferEnd && (*cursor == ' ' || *cursor == '\t'))
+			{
+				++cursor;
+			}
+			if (cursor >= bufferEnd)
+			{
+				break;
+			}
+			const char* tokenStart = cursor;
+			while (cursor < bufferEnd && *cursor != ' ' && *cursor != '\t' &&
+				*cursor != '\r' && *cursor != '\n')
+			{
+				++cursor;
+			}
+			if (cursor == tokenStart)
+			{
+				// The cursor sits on the line ending (e.g. "=ypart ...\r\n"
+				// is followed by the restored body in the same buffer):
+				// step over it so the token scan always makes progress.
+				++cursor;
+				break;
+			}
+			if (static_cast<size_t>(cursor - tokenStart) >= 5 &&
+				strncmp(tokenStart, "name=", 5) == 0)
+			{
+				break;
+			}
+			if (static_cast<size_t>(cursor - tokenStart) > keywordLen &&
+				strncmp(tokenStart, keyword, keywordLen) == 0)
+			{
+				uint32_t value = 0;
+				if (!ParseEncryptedDecimalToken(tokenStart + keywordLen, cursor, value))
+				{
+					m_authFailed = true;
+					m_decryptedPlaintext.clear();
+					return;
+				}
+				if (!seen)
+				{
+					resolved = value;
+					seen = true;
+				}
+				else if (value != resolved)
+				{
+					m_authFailed = true;
+					m_decryptedPlaintext.clear();
+					return;
+				}
+			}
+		}
 	}
 }
 
@@ -498,7 +579,7 @@ void Decoder::ParseName(const char* buffer, const char* bufferEnd)
 		// Plain yEnc keeps the upstream scan for "=ypart ".
 		if (!m_encryptedWireMode && pe + 7 <= bufferEnd && strncmp(pe, "=ypart ", 7) == 0)
 		{
-			ParseYpart(pe);
+			ParseYpart(pe, bufferEnd);
 			break;
 		}
 		++pe;
@@ -548,6 +629,18 @@ void Decoder::ProcessYenc(char* buffer, int len)
 	if (len >= 8 && !strncmp(buffer, "=ybegin ", 8))
 	{
 		m_begin = true;
+		// Body Std v1.2 §2.1 (encrypted path only): conflicting or malformed
+		// duplicate part=/size= fail closed as provider corruption before
+		// any value (including a size >= 2^32) is stored. Ordinary yEnc
+		// never takes this branch and keeps first-match strstr/atoi.
+		if (m_encryptedWireMode)
+		{
+			CheckEncryptedDuplicateGeometry(buffer, buffer + len);
+			if (m_authFailed)
+			{
+				return;
+			}
+		}
 		char* pb = strstr(buffer, " size=");
 		if (pb && pb + 6 < buffer + len) // Ensure room for " size="
 		{
@@ -577,7 +670,7 @@ void Decoder::ProcessYenc(char* buffer, int len)
 				// value fails closed as provider corruption with no
 				// plaintext released. Ordinary yEnc keeps atoi below.
 				uint32_t encryptedPart = 0;
-				if (!ParseEncryptedPartToken(partPtr + 6, buffer + len, encryptedPart))
+				if (!ParseEncryptedDecimalToken(partPtr + 6, buffer + len, encryptedPart))
 				{
 					m_authFailed = true;
 					m_decryptedPlaintext.clear();
@@ -611,7 +704,7 @@ void Decoder::ProcessYenc(char* buffer, int len)
 	// 2. Check =ypart (Prefix length 7)
 	else if (len >= 7 && !strncmp(buffer, "=ypart ", 7))
 	{
-		ParseYpart(buffer);
+		ParseYpart(buffer, buffer + len);
 	}
 	// 3. Check =yend (Prefix length 6)
 	else if (len >= 6 && !strncmp(buffer, "=yend ", 6))

@@ -504,6 +504,29 @@ BOOST_AUTO_TEST_CASE(YEncEncryptedMetaParsingTest)
 	}
 }
 
+// GAP13-03: the second canonical NZB namespace (.../nzb/nzb-1.1.dtd) parses
+// exactly like the 2003/nzb namespace: both parsers are namespace-agnostic.
+BOOST_AUTO_TEST_CASE(YEncEncryptedSecondNamespaceTest)
+{
+	const std::string xml =
+		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"<nzb xmlns=\"http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd\">\n"
+		"<head><meta type=\"password\">secret</meta><meta type=\"yenc_encrypted\">true</meta></head>\n"
+		"<file poster=\"p\" date=\"100\" subject=\"test.bin\">\n"
+		"<groups><group>a.b.t</group></groups>\n"
+		"<segments><segment bytes=\"100\" number=\"1\">msg1@test</segment></segments>\n"
+		"</file>\n"
+		"</nzb>\n";
+	auto [ok, info] = ParseXml(xml, "enc_second_namespace.nzb");
+	BOOST_CHECK(ok);
+	BOOST_REQUIRE(info);
+	BOOST_CHECK(info->IsYEncEncrypted());
+	BOOST_CHECK_EQUAL(std::string(info->GetPassword()), "secret");
+	BOOST_REQUIRE_EQUAL(info->GetFileCount(), 1);
+	auto articles = info->GetFileList()->front()->GetArticles();
+	BOOST_REQUIRE_EQUAL(articles->size(), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(EncryptedReleaseWithoutPasswordStructuralAbortTest)
 {
 	// Structural tier: yenc_encrypted release without password meta and

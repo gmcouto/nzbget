@@ -98,8 +98,24 @@ private:
 	 * @brief Extracts the begin and end positions from a "=ypart" line.
 	 *
 	 * Parses the "=ypart" line to find " begin=" and " end=".
+	 * @param bufferEnd Exclusive end of the bounded line buffer; only
+	 * meaningful together with the encrypted-path duplicate check.
 	*/
-	void ParseYpart(const char* buffer);
+	void ParseYpart(const char* buffer, const char* bufferEnd = nullptr);
+
+	/**
+	 * @brief Validates duplicate encrypted-path geometry keywords.
+	 *
+	 * Body Std v1.2 §2.1: if part=/size= (=ybegin) or begin=/end= (=ypart)
+	 * appears more than once, every occurrence must be a well-formed
+	 * decimal (entire token consumed) and all occurrences must be equal;
+	 * otherwise the encrypted path fails closed (m_authFailed, no
+	 * plaintext). Only tokens before any name= are inspected, mirroring
+	 * the encrypted ParseName/ProcessYenc handling; ordinary yEnc never
+	 * calls this. The checked-decimal grammar is shared with the
+	 * encrypted part= token parser in Decoder.cpp.
+	 */
+	void CheckEncryptedDuplicateGeometry(const char* buffer, const char* bufferEnd);
 
 	/**
 	 * @brief Extracts the filename from a yEnc "name=" field.

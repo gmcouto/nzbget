@@ -1700,7 +1700,9 @@ std::string BuildEncryptedSinglePartWireWithCrcToken(const std::string& crcToken
 // the short-token case passes a payload whose ciphertext CRC is 00294a1c.
 std::string BuildEncryptedMultipartWireWithCrcToken(const std::string& pcrcToken,
 	const std::string& wholeFileCrcToken = "",
-	const std::vector<uint8_t>& pt = HexToBin("48656c6c6f20576f726c642e747874ff"))
+	const std::vector<uint8_t>& pt = HexToBin("48656c6c6f20576f726c642e747874ff"),
+	const std::string& ybeginLine = "=ybegin part=1 total=2 line=128 size=32 name=multi.dat",
+	const std::string& ypartLine = "=ypart begin=1 end=16")
 {
 	const std::string name = "multi.dat";
 	const std::vector<uint8_t> salt = HexToBin(SINGLE_PART_SALT);
@@ -1715,13 +1717,13 @@ std::string BuildEncryptedMultipartWireWithCrcToken(const std::string& pcrcToken
 		pt.data(), pt.size(), aad.data(), aad.size(), nullptr, nonce.data(), key.data());
 
 	YEncDecryptor encDec("test123");
-	std::string line1 = "=ybegin part=1 total=2 line=128 size=32 name=" + name;
+	std::string line1 = ybeginLine;
 	std::vector<uint8_t> wireLine1;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line1.data()), line1.size(), 1, 1, true, salt.data(), wireLine1)),
 		static_cast<int>(YEncDecryptor::Status::Ok));
 
-	std::string line2 = "=ypart begin=1 end=16";
+	std::string line2 = ypartLine;
 	std::vector<uint8_t> wireLine2;
 	BOOST_REQUIRE_EQUAL(static_cast<int>(encDec.EncryptControlLine(
 		reinterpret_cast<const uint8_t*>(line2.data()), line2.size(), 1, 2, false, salt.data(), wireLine2)),
@@ -1860,6 +1862,136 @@ BOOST_AUTO_TEST_CASE(RestoreControlLinesNameAbsentPartDecidesLayoutTest)
 		BOOST_REQUIRE(encDec.RestoreControlLines(wire.data(), wire.size(), clean, outSalt) == YEncDecryptor::Status::Ok);
 		BOOST_CHECK(clean.find("=ypart begin=1 end=16\r\n") != std::string::npos);
 		BOOST_CHECK(clean.find("=yencryption") == std::string::npos);
+	}
+}
+
+// Body Std v1.2 §2.1 (GAP13-05): on the encrypted path, duplicate
+// part=/size= (=ybegin) or begin=/end= (=ypart) keywords must all be
+// well-formed and equal; same-value duplicates decode, conflicting or
+// malformed duplicates fail closed with no plaintext. AAD stays valid
+// (part 1, begin 1, 16 segment bytes) in every case below.
+BOOST_AUTO_TEST_CASE(EncryptedDuplicateGeometryKeywordsTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	const std::string goodBegin = "=ybegin part=1 total=2 line=128 size=32 name=multi.dat";
+	const std::string goodPart = "=ypart begin=1 end=16";
+
+	auto runCase = [&](const std::string& ybeginLine, const std::string& ypartLine,
+		Decoder::EStatus expectedStatus)
+	{
+		std::string wire = BuildEncryptedMultipartWireWithCrcToken("b3185887", "", expectedPlaintext,
+			ybeginLine, ypartLine);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(expectedStatus));
+		if (expectedStatus == Decoder::dsFinished)
+		{
+			BOOST_CHECK_EQUAL_COLLECTIONS(decoder.GetDecryptedData().begin(), decoder.GetDecryptedData().end(),
+				expectedPlaintext.begin(), expectedPlaintext.end());
+		}
+		else
+		{
+			BOOST_CHECK(decoder.GetDecryptedData().empty());
+		}
+	};
+
+	// Controls: canonical lines and same-value duplicates of all four
+	// geometry keywords (both orders where the value set allows it).
+	runCase(goodBegin, goodPart, Decoder::dsFinished);
+	runCase("=ybegin part=1 part=1 total=2 line=128 size=32 size=32 name=multi.dat", goodPart, Decoder::dsFinished);
+	runCase("=ybegin part=1 total=2 line=128 size=32 name=multi.dat", "=ypart begin=1 begin=1 end=16 end=16", Decoder::dsFinished);
+
+	// Conflicting duplicates in both orders; each must fail closed.
+	runCase("=ybegin part=1 part=2 total=2 line=128 size=32 name=multi.dat", goodPart, Decoder::dsAuthFailed);
+	runCase("=ybegin part=2 part=1 total=2 line=128 size=32 name=multi.dat", goodPart, Decoder::dsAuthFailed);
+	runCase("=ybegin part=1 total=2 line=128 size=32 size=33 name=multi.dat", goodPart, Decoder::dsAuthFailed);
+	runCase("=ybegin part=1 total=2 line=128 size=33 size=32 name=multi.dat", goodPart, Decoder::dsAuthFailed);
+	runCase(goodBegin, "=ypart begin=1 begin=2 end=16", Decoder::dsAuthFailed);
+	runCase(goodBegin, "=ypart begin=2 begin=1 end=16", Decoder::dsAuthFailed);
+	runCase(goodBegin, "=ypart begin=1 end=16 end=17", Decoder::dsAuthFailed);
+	runCase(goodBegin, "=ypart begin=1 end=17 end=16", Decoder::dsAuthFailed);
+
+	// Malformed or overflowing occurrence beside a valid duplicate.
+	runCase("=ybegin part=1 part=abc total=2 line=128 size=32 name=multi.dat", goodPart, Decoder::dsAuthFailed);
+	runCase(goodBegin, "=ypart begin=1 begin=4294967296 end=16", Decoder::dsAuthFailed);
+	runCase("=ybegin part=1 total=2 line=128 size=32 size=4294967296 name=multi.dat", goodPart, Decoder::dsAuthFailed);
+}
+
+// Body Std v1.2 §5 (GAP13-01): a duplicate =yencryption line in the data
+// region (after the first data line) fails closed; the implementation is
+// YEncDecryptor::RestoreControlLines' body scan. The duplicate here is a
+// plaintext line in the restored block (a wire-encrypted duplicate would
+// simply look like ordinary data after the first data line started).
+BOOST_AUTO_TEST_CASE(EncryptedDuplicateYencryptionLineFailsClosedTest)
+{
+	const std::vector<uint8_t> expectedPlaintext = HexToBin("48656c6c6f20576f726c642e747874ff");
+	std::string wire = BuildEncryptedSinglePartWire("file.bin", expectedPlaintext);
+	// Insert a plaintext duplicate =yencryption line after the first data
+	// line. The restored block then contains it verbatim in the body region;
+	// split the single encoded data line so the duplicate really sits after
+	// a data line (splitting yEnc data at a line boundary is inert).
+	size_t line1End = wire.find("\r\n");
+	BOOST_REQUIRE(line1End != std::string::npos);
+	size_t line2End = wire.find("\r\n", line1End + 2);
+	BOOST_REQUIRE(line2End != std::string::npos);
+	size_t dataStart = line2End + 2;
+	size_t dataEnd = wire.find("\r\n", dataStart);
+	BOOST_REQUIRE(dataEnd != std::string::npos && dataEnd > dataStart);
+	std::string data = wire.substr(dataStart, dataEnd - dataStart);
+	size_t split = data.size() / 2;
+	BOOST_REQUIRE(split > 0);
+	std::string mutated = wire.substr(0, dataStart) + data.substr(0, split) + "\r\n" +
+		"=yencryption cipher=XChaCha20-Poly1305\r\n" + data.substr(split) + wire.substr(dataEnd);
+	YEncDecryptor decryptor("test123");
+	Decoder decoder;
+	decoder.SetDecryptor(&decryptor);
+	decoder.DecodeBuffer(mutated.data(), static_cast<int>(mutated.size()));
+	BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+	BOOST_CHECK(decoder.GetDecryptedData().empty());
+}
+
+// Body Std v1.2 §2.1/§5 (GAP13-02): enumerated fields at exactly 2^32
+// (begin=, end=, =ybegin size=) fail closed. begin=4294967296 must not wrap
+// to 0 into the AAD geometry check (the raw value never reaches CheckYenc
+// masked: the encrypted duplicate/decimal grammar rejects it first; for
+// end= the CheckYenc >= 2^32 guard fires). AAD stays valid in all cases.
+BOOST_AUTO_TEST_CASE(EncryptedEnumeratedFieldOverflowFailsClosedTest)
+{
+	const std::string goodBegin = "=ybegin part=1 total=2 line=128 size=32 name=multi.dat";
+	const std::string goodPart = "=ypart begin=1 end=16";
+	const char* overflowYbegins[] = {
+		"=ybegin part=1 total=2 line=128 size=4294967296 name=multi.dat",
+	};
+	const char* overflowYparts[] = {
+		"=ypart begin=4294967296 end=16",
+		"=ypart begin=1 end=4294967296",
+	};
+	for (const char* ybeginLine : overflowYbegins)
+	{
+		std::string wire = BuildEncryptedMultipartWireWithCrcToken("b3185887", "",
+			HexToBin("48656c6c6f20576f726c642e747874ff"), std::string(ybeginLine), goodPart);
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
+	}
+	for (const char* ypartLine : overflowYparts)
+	{
+		std::string wire = BuildEncryptedMultipartWireWithCrcToken("b3185887", "",
+			HexToBin("48656c6c6f20576f726c642e747874ff"), goodBegin, std::string(ypartLine));
+		YEncDecryptor decryptor("test123");
+		Decoder decoder;
+		decoder.SetDecryptor(&decryptor);
+		decoder.SetCrcCheck(true);
+		decoder.DecodeBuffer(wire.data(), static_cast<int>(wire.size()));
+		BOOST_CHECK_EQUAL(static_cast<int>(decoder.Check()), static_cast<int>(Decoder::dsAuthFailed));
+		BOOST_CHECK(decoder.GetDecryptedData().empty());
 	}
 }
 

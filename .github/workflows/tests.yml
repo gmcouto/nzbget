@@ -66,7 +66,7 @@ jobs:
     - name: Prepare environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev unrar 7zip
+        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev unrar 7zip libsodium-dev libargon2-dev
 
     - name: Checkout
       uses: actions/checkout@v6
@@ -98,7 +98,7 @@ jobs:
     - name: Prepare environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev unrar 7zip
+        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev unrar 7zip libsodium-dev libargon2-dev
 
     - name: Checkout
       uses: actions/checkout@v6
@@ -129,7 +129,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        brew install --formula boost
+        brew install --formula boost libsodium argon2
 
     - name: Checkout
       uses: actions/checkout@v6
@@ -174,7 +174,7 @@ jobs:
         operating_system: openbsd
         version: '7.9'
         run: |
-          sudo pkg_add git cmake libxml boost unrar p7zip
+          sudo pkg_add git cmake libxml boost unrar p7zip libsodium argon2
           mkdir build
           cd build
           cmake .. -DENABLE_CCACHE=OFF -DBUILD_ONLY_TESTS=ON -DCURSES_INCLUDE_PATH=/usr/include
@@ -202,7 +202,7 @@ jobs:
         operating_system: freebsd
         version: '14.2'
         run: |
-          sudo pkg install -y git cmake libxml2 boost-all unrar 7-zip
+          sudo pkg install -y git cmake libxml2 boost-all unrar 7-zip libsodium libargon2
           mkdir build
           cd build
           cmake .. -DBUILD_ONLY_TESTS=ON -DCURSES_INCLUDE_PATH=/usr/include
@@ -224,7 +224,7 @@ jobs:
     - name: Prepare environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev cppcheck
+        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev libsodium-dev libargon2-dev cppcheck
 
     - name: Checkout
       uses: actions/checkout@v6
@@ -257,7 +257,7 @@ jobs:
     - name: Prepare environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev
+        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev libsodium-dev libargon2-dev
 
     - name: Checkout
       uses: actions/checkout@v6
@@ -276,7 +276,7 @@ jobs:
     - name: Prepare environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev
+        sudo apt-get install -y cmake libxml2-dev libssl-dev libncurses-dev libboost-all-dev libsodium-dev libargon2-dev
 
     - name: Checkout
       uses: actions/checkout@v6
@@ -301,7 +301,7 @@ jobs:
         operating_system: openbsd
         version: '7.9'
         run: |
-          sudo pkg_add git cmake libxml boost
+          sudo pkg_add git cmake libxml boost libsodium argon2
           mkdir build
           cd build
           cmake .. -DENABLE_CCACHE=OFF -DCURSES_INCLUDE_PATH=/usr/include
